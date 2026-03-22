@@ -40,3 +40,33 @@ export async function unstarMessageHandler(
     content: [{ type: 'text', text: JSON.stringify({ success: true, action: 'unstarred', uid: params.uid }) }],
   };
 }
+
+export async function batchMarkReadHandler(
+  imap: ImapClientManager,
+  params: { folder: string; uids: number[] }
+): Promise<ToolResult> {
+  const result = await imap.batchAddFlags(params.folder, params.uids, ['\\Seen']);
+  return {
+    content: [{ type: 'text', text: JSON.stringify({ success: true, action: 'batch_marked_read', ...result }) }],
+  };
+}
+
+export async function batchMarkUnreadHandler(
+  imap: ImapClientManager,
+  params: { folder: string; uids: number[] }
+): Promise<ToolResult> {
+  const result = await imap.batchRemoveFlags(params.folder, params.uids, ['\\Seen']);
+  return {
+    content: [{ type: 'text', text: JSON.stringify({ success: true, action: 'batch_marked_unread', ...result }) }],
+  };
+}
+
+export async function markAllReadHandler(
+  imap: ImapClientManager,
+  params: { folder: string }
+): Promise<ToolResult> {
+  const result = await imap.markAllRead(params.folder);
+  return {
+    content: [{ type: 'text', text: JSON.stringify({ success: true, action: 'mark_all_read', folder: params.folder, ...result }) }],
+  };
+}

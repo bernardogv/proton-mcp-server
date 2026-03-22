@@ -27,6 +27,7 @@ export interface MessageSummary {
   date: string;
   flags: string[];
   hasAttachments: boolean;
+  attachmentInfo?: AttachmentSummary[];
 }
 
 export interface MessageFull extends MessageSummary {
@@ -41,6 +42,26 @@ export interface AttachmentMeta {
   filename: string;
   mimeType: string;
   size: number;
+}
+
+export interface FolderStats {
+  path: string;
+  total: number;
+  unseen: number;
+}
+
+export interface AttachmentSummary {
+  filename: string;
+  mimeType: string;
+  size: number;
+}
+
+export interface SenderSummary {
+  sender: string;
+  address: string;
+  count: number;
+  latestDate: string;
+  uids: number[];
 }
 
 export interface ToolResult {

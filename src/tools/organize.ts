@@ -40,3 +40,88 @@ export async function deleteMessageHandler(
     content: [{ type: 'text', text: JSON.stringify({ success: true, action: 'deleted', uid: params.uid }) }],
   };
 }
+
+export async function batchMoveHandler(
+  imap: ImapClientManager,
+  params: { sourceFolder: string; uids: number[]; destinationFolder: string }
+): Promise<ToolResult> {
+  const result = await imap.batchMoveMessages(params.sourceFolder, params.uids, params.destinationFolder);
+  return {
+    content: [{ type: 'text', text: JSON.stringify({ success: true, action: 'batch_moved', ...result, to: params.destinationFolder }) }],
+  };
+}
+
+export async function batchApplyLabelHandler(
+  imap: ImapClientManager,
+  params: { sourceFolder: string; uids: number[]; labelFolder: string }
+): Promise<ToolResult> {
+  const result = await imap.batchCopyMessages(params.sourceFolder, params.uids, params.labelFolder);
+  return {
+    content: [{ type: 'text', text: JSON.stringify({ success: true, action: 'batch_labeled', ...result, label: params.labelFolder }) }],
+  };
+}
+
+export async function batchDeleteHandler(
+  imap: ImapClientManager,
+  params: { folder: string; uids: number[] }
+): Promise<ToolResult> {
+  const result = await imap.batchMoveMessages(params.folder, params.uids, 'Trash');
+  return {
+    content: [{ type: 'text', text: JSON.stringify({ success: true, action: 'batch_deleted', ...result }) }],
+  };
+}
+
+export async function crossFolderBatchMoveHandler(
+  imap: ImapClientManager,
+  params: { items: Array<{ uid: number; sourceFolder: string }>; destinationFolder: string }
+): Promise<ToolResult> {
+  const result = await imap.crossFolderBatchMove(params.items, params.destinationFolder);
+  return {
+    content: [{ type: 'text', text: JSON.stringify({ success: true, action: 'cross_folder_batch_moved', ...result, to: params.destinationFolder }) }],
+  };
+}
+
+export async function moveBySenderHandler(
+  imap: ImapClientManager,
+  params: { sourceFolder: string; senderAddress: string; destinationFolder: string }
+): Promise<ToolResult> {
+  const result = await imap.moveBySender(params.sourceFolder, params.senderAddress, params.destinationFolder);
+  return {
+    content: [{ type: 'text', text: JSON.stringify({ success: true, action: 'moved_by_sender', sender: params.senderAddress, ...result, to: params.destinationFolder }) }],
+  };
+}
+
+export async function moveBySearchHandler(
+  imap: ImapClientManager,
+  params: {
+    sourceFolder: string;
+    destinationFolder: string;
+    from?: string;
+    to?: string;
+    subject?: string;
+    keyword?: string;
+    since?: string;
+    before?: string;
+    unreadOnly?: boolean;
+  }
+): Promise<ToolResult> {
+  const criteria: Record<string, unknown> = {};
+  if (params.from) criteria.from = params.from;
+  if (params.to) criteria.to = params.to;
+  if (params.subject) criteria.subject = params.subject;
+  if (params.keyword) criteria.body = params.keyword;
+  if (params.since) criteria.since = new Date(params.since);
+  if (params.before) criteria.before = new Date(params.before);
+  if (params.unreadOnly) criteria.seen = false;
+
+  if (Object.keys(criteria).length === 0) {
+    return {
+      content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'At least one search criterion is required to prevent accidental moves' }) }],
+    };
+  }
+
+  const result = await imap.moveBySearch(params.sourceFolder, criteria, params.destinationFolder);
+  return {
+    content: [{ type: 'text', text: JSON.stringify({ success: true, action: 'moved_by_search', ...result, to: params.destinationFolder }) }],
+  };
+}
