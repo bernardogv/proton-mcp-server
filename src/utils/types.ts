@@ -45,4 +45,5 @@ export interface AttachmentMeta {
 
 export interface ToolResult {
   content: Array<{ type: 'text'; text: string }>;
+  [key: string]: unknown; // Index signature for MCP SDK compatibility
 }

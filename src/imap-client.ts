@@ -42,14 +42,16 @@ export class ImapClientManager {
   async getMessages(folder: string, limit: number, offset: number, unreadOnly: boolean): Promise<MessageSummary[]> {
     const lock = await this.client.getMailboxLock(folder);
     try {
-      const total = this.client.mailbox?.exists ?? 0;
-      if (total === 0) return [];
+      const mailbox = this.client.mailbox;
+      if (!mailbox || mailbox.exists === 0) return [];
 
       let uids: number[];
       if (unreadOnly) {
-        uids = await this.client.search({ seen: false }, { uid: true });
+        const searchResult = await this.client.search({ seen: false }, { uid: true });
+        uids = searchResult === false ? [] : searchResult;
       } else {
-        uids = await this.client.search({ all: true }, { uid: true });
+        const searchResult = await this.client.search({ all: true }, { uid: true });
+        uids = searchResult === false ? [] : searchResult;
       }
 
       uids.sort((a, b) => b - a);
@@ -97,6 +99,10 @@ export class ImapClientManager {
         source: true,
       }, { uid: true });
 
+      if (!msg || !msg.source) {
+        throw new Error(`Message UID ${uid} not found in folder ${folder}`);
+      }
+
       const { simpleParser } = await import('mailparser');
       const parsed = await simpleParser(msg.source);
 
@@ -126,7 +132,8 @@ export class ImapClientManager {
   async searchMessages(folder: string, criteria: Record<string, unknown>): Promise<number[]> {
     const lock = await this.client.getMailboxLock(folder);
     try {
-      return await this.client.search(criteria, { uid: true });
+      const result = await this.client.search(criteria, { uid: true });
+      return result === false ? [] : result;
     } finally {
       lock.release();
     }
@@ -212,6 +219,10 @@ export class ImapClientManager {
         uid: true,
         source: true,
       }, { uid: true });
+
+      if (!msg || !msg.source) {
+        throw new Error(`Message UID ${uid} not found in folder ${folder}`);
+      }
 
       const { simpleParser } = await import('mailparser');
       const parsed = await simpleParser(msg.source);
