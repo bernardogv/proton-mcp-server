@@ -43,11 +43,22 @@ export async function deleteMessageHandler(
 
 export async function batchMoveHandler(
   imap: ImapClientManager,
-  params: { sourceFolder: string; uids: number[]; destinationFolder: string }
+  params: { sourceFolder: string; uids: number[]; destinationFolder: string; dryRun?: boolean }
 ): Promise<ToolResult> {
+  if (params.dryRun) {
+    return {
+      content: [{ type: 'text', text: JSON.stringify({
+        dryRun: true,
+        wouldAffect: params.uids.length,
+        uids: params.uids,
+        sourceFolder: params.sourceFolder,
+        destination: params.destinationFolder,
+      }) }],
+    };
+  }
   const result = await imap.batchMoveMessages(params.sourceFolder, params.uids, params.destinationFolder);
   return {
-    content: [{ type: 'text', text: JSON.stringify({ success: true, action: 'batch_moved', ...result, to: params.destinationFolder }) }],
+    content: [{ type: 'text', text: JSON.stringify({ action: 'batch_moved', ...result }) }],
   };
 }
 
@@ -67,7 +78,7 @@ export async function batchDeleteHandler(
 ): Promise<ToolResult> {
   const result = await imap.batchMoveMessages(params.folder, params.uids, 'Trash');
   return {
-    content: [{ type: 'text', text: JSON.stringify({ success: true, action: 'batch_deleted', ...result }) }],
+    content: [{ type: 'text', text: JSON.stringify({ action: 'batch_deleted', ...result }) }],
   };
 }
 
@@ -97,7 +108,7 @@ export async function batchRemoveLabelHandler(
 ): Promise<ToolResult> {
   const result = await imap.batchMoveMessages(params.labelFolder, params.uids, 'INBOX');
   return {
-    content: [{ type: 'text', text: JSON.stringify({ success: true, action: 'batch_label_removed', ...result, removedFrom: params.labelFolder }) }],
+    content: [{ type: 'text', text: JSON.stringify({ action: 'batch_label_removed', ...result, removedFrom: params.labelFolder }) }],
   };
 }
 

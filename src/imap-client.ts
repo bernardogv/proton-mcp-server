@@ -1,5 +1,6 @@
 import { ImapFlow } from 'imapflow';
-import type { BridgeConfig, FolderInfo, FolderStats, MessageSummary, MessageFull, AttachmentMeta, AttachmentSummary, SenderSummary } from './utils/types.js';
+import type { BridgeConfig, FolderInfo, FolderStats, MessageSummary, MessageFull, AttachmentMeta, AttachmentSummary, SenderSummary, BatchResult } from './utils/types.js';
+import { assertFolderExists } from './utils/folder-validation.js';
 
 export class ImapClientManager {
   private config: BridgeConfig;
@@ -269,17 +270,58 @@ export class ImapClientManager {
     });
   }
 
-  async batchMoveMessages(sourceFolder: string, uids: number[], destFolder: string): Promise<{ moved: number }> {
-    if (uids.length === 0) return { moved: 0 };
+  async batchMoveMessages(
+    sourceFolder: string,
+    uids: number[],
+    destFolder: string,
+  ): Promise<BatchResult> {
+    if (uids.length === 0) {
+      return { success: true, requested: 0, moved: 0, destination: destFolder, sourceFolder };
+    }
     return this.withConnection(async (client) => {
+      const mailboxes = await client.list();
+      const paths = new Set(mailboxes.map((m) => m.path));
+      assertFolderExists(paths, sourceFolder);
+      assertFolderExists(paths, destFolder);
+
+      // Capture source size before
+      const beforeStatus = await client.status(sourceFolder, { messages: true });
+      const before = beforeStatus.messages ?? 0;
+
+      // Run the move under a lock
       const lock = await client.getMailboxLock(sourceFolder);
       try {
         const range = uids.join(',');
         await client.messageMove(range, destFolder, { uid: true });
-        return { moved: uids.length };
       } finally {
         lock.release();
       }
+
+      // Capture source size after
+      const afterStatus = await client.status(sourceFolder, { messages: true });
+      const after = afterStatus.messages ?? 0;
+      const moved = before - after;
+
+      // If under-counted, find which requested UIDs still exist in source
+      let failedUids: number[] | undefined;
+      if (moved < uids.length) {
+        const checkLock = await client.getMailboxLock(sourceFolder);
+        try {
+          const result = await client.search({ uid: uids.join(',') }, { uid: true });
+          failedUids = result === false ? [] : result;
+        } finally {
+          checkLock.release();
+        }
+      }
+
+      return {
+        success: moved === uids.length,
+        requested: uids.length,
+        moved,
+        destination: destFolder,
+        sourceFolder,
+        ...(failedUids && { failedUids }),
+      };
     });
   }
 
@@ -341,8 +383,8 @@ export class ImapClientManager {
 
     for (const [folder, uids] of grouped) {
       const result = await this.batchMoveMessages(folder, uids, destFolder);
-      byFolder[folder] = result.moved;
-      totalMoved += result.moved;
+      byFolder[folder] = result.moved ?? 0;
+      totalMoved += result.moved ?? 0;
     }
 
     return { moved: totalMoved, byFolder };

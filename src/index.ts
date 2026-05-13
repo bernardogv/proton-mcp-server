@@ -267,15 +267,16 @@ server.registerTool('delete_message', {
 
 server.registerTool('batch_move_messages', {
   title: 'Batch Move Messages',
-  description: 'Move multiple messages to a folder in a single operation. Accepts an array of UIDs.',
+  description: 'Move multiple messages to a folder in a single operation. Pre-validates folders exist and post-verifies the move count. Returns {success, requested, moved, failedUids?}. Use dryRun:true to preview.',
   inputSchema: z.object({
     sourceFolder: z.string().describe('Current folder of the messages'),
     uids: z.array(z.number()).min(1).max(500).describe('Array of message UIDs to move (max 500)'),
     destinationFolder: z.string().describe('Target folder'),
+    dryRun: z.boolean().default(false).describe('If true, preview without mutating. Returns the UIDs that would be moved.'),
   }),
-}, async ({ sourceFolder, uids, destinationFolder }) => {
+}, async ({ sourceFolder, uids, destinationFolder, dryRun }) => {
   await imap.connect();
-  return batchMoveHandler(imap, { sourceFolder, uids, destinationFolder });
+  return batchMoveHandler(imap, { sourceFolder, uids, destinationFolder, dryRun });
 });
 
 server.registerTool('batch_apply_label', {
