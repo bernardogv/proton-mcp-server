@@ -1008,6 +1008,46 @@ export class ImapClientManager {
     });
   }
 
+  async getSenderDistribution(
+    excludeFolders: Set<string>,
+  ): Promise<Map<string, { name: string; total: number; byFolder: Record<string, number> }>> {
+    return this.withConnection(async (client) => {
+      const mailboxes = await client.list();
+      const senders = new Map<string, { name: string; total: number; byFolder: Record<string, number> }>();
+
+      for (const mb of mailboxes) {
+        if (excludeFolders.has(mb.path)) continue;
+        if (mb.flags && (mb.flags as Set<string>).has('\\Noselect')) continue;
+        let lock;
+        try {
+          lock = await client.getMailboxLock(mb.path);
+        } catch {
+          continue;
+        }
+        try {
+          const result = await client.search({ all: true }, { uid: true });
+          const uids: number[] = result === false ? [] : result;
+          if (uids.length === 0) continue;
+          const range = uids.join(',');
+          for await (const msg of client.fetch(range, { envelope: true }, { uid: true })) {
+            const from = msg.envelope?.from?.[0];
+            if (!from || !from.address) continue;
+            const address = from.address.toLowerCase();
+            const name = from.name || address;
+            const entry = senders.get(address) || { name, total: 0, byFolder: {} };
+            entry.total++;
+            entry.byFolder[mb.path] = (entry.byFolder[mb.path] || 0) + 1;
+            if (!senders.has(address)) senders.set(address, entry);
+          }
+        } finally {
+          lock.release();
+        }
+      }
+
+      return senders;
+    });
+  }
+
   private parseMessageSummary(msg: any): MessageSummary {
     const attachments = extractAttachmentInfo(msg.bodyStructure);
     return {

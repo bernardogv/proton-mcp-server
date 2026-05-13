@@ -24,6 +24,7 @@ import { sendEmailHandler, replyMessageHandler, forwardMessageHandler } from './
 import { getAttachmentHandler } from './tools/attachments.js';
 import { getChangesSinceHandler } from './tools/changes.js';
 import { routeHandler, batchRouteHandler } from './tools/route.js';
+import { suggestSenderRoutesHandler } from './tools/intelligence.js';
 
 const config = loadConfig();
 const imap = new ImapClientManager(config);
@@ -124,6 +125,19 @@ server.registerTool('get_unread_count', {
 }, async ({ folder }) => {
   await imap.connect();
   return getUnreadCountHandler(imap, { folder });
+});
+
+server.registerTool('suggest_sender_routes', {
+  title: 'Suggest Sender Routes',
+  description: 'Analyze where each sender\'s mail has historically lived (across all folders) and suggest routing rules for senders whose mail consistently belongs in a non-INBOX folder. Stateless — re-derives from current IMAP state each call. Returns suggestions, does not auto-route.',
+  inputSchema: z.object({
+    minConfidence: z.number().min(0.5).max(1).default(0.8).describe('Minimum dominant-folder ratio (default 0.8)'),
+    minVolume: z.number().min(1).default(3).describe('Minimum total messages from sender (default 3)'),
+    excludeFolders: z.array(z.string()).optional().describe('Folders to skip during analysis (default: Trash, Spam, Drafts, Sent, Archive, All Mail)'),
+  }),
+}, async ({ minConfidence, minVolume, excludeFolders }) => {
+  await imap.connect();
+  return suggestSenderRoutesHandler(imap, { minConfidence, minVolume, excludeFolders });
 });
 
 // --- Message tools ---
