@@ -662,32 +662,100 @@ export class ImapClientManager {
     });
   }
 
-  async moveBySender(folder: string, senderAddress: string, destFolder: string): Promise<{ moved: number; uids: number[] }> {
+  async moveBySender(folder: string, senderAddress: string, destFolder: string): Promise<BatchResult & { uids: number[] }> {
     return this.withConnection(async (client) => {
+      const mailboxes = await client.list();
+      const paths = new Set(mailboxes.map((m) => m.path));
+      assertFolderExists(paths, folder);
+      assertFolderExists(paths, destFolder);
+
       const lock = await client.getMailboxLock(folder);
+      let uids: number[];
       try {
         const searchResult = await client.search({ from: senderAddress }, { uid: true });
-        const uids: number[] = searchResult === false ? [] : searchResult;
-        if (uids.length === 0) return { moved: 0, uids: [] };
-        const range = uids.join(',');
-        await client.messageMove(range, destFolder, { uid: true });
-        return { moved: uids.length, uids };
+        uids = searchResult === false ? [] : searchResult;
       } finally {
         lock.release();
       }
+      if (uids.length === 0) {
+        return { success: true, requested: 0, moved: 0, destination: destFolder, sourceFolder: folder, uids: [] };
+      }
+
+      const beforeStatus = await client.status(folder, { messages: true });
+      const before = beforeStatus.messages ?? 0;
+
+      const moveLock = await client.getMailboxLock(folder);
+      try {
+        await client.messageMove(uids.join(','), destFolder, { uid: true });
+      } finally {
+        moveLock.release();
+      }
+
+      const afterStatus = await client.status(folder, { messages: true });
+      const after = afterStatus.messages ?? 0;
+      const moved = before - after;
+
+      return {
+        success: moved === uids.length,
+        requested: uids.length,
+        moved,
+        destination: destFolder,
+        sourceFolder: folder,
+        uids,
+      };
     });
   }
 
-  async moveBySearch(folder: string, criteria: Record<string, unknown>, destFolder: string): Promise<{ moved: number; uids: number[] }> {
+  async moveBySearch(folder: string, criteria: Record<string, unknown>, destFolder: string): Promise<BatchResult & { uids: number[] }> {
+    return this.withConnection(async (client) => {
+      const mailboxes = await client.list();
+      const paths = new Set(mailboxes.map((m) => m.path));
+      assertFolderExists(paths, folder);
+      assertFolderExists(paths, destFolder);
+
+      const lock = await client.getMailboxLock(folder);
+      let uids: number[];
+      try {
+        const searchResult = await client.search(criteria, { uid: true });
+        uids = searchResult === false ? [] : searchResult;
+      } finally {
+        lock.release();
+      }
+      if (uids.length === 0) {
+        return { success: true, requested: 0, moved: 0, destination: destFolder, sourceFolder: folder, uids: [] };
+      }
+
+      const beforeStatus = await client.status(folder, { messages: true });
+      const before = beforeStatus.messages ?? 0;
+
+      const moveLock = await client.getMailboxLock(folder);
+      try {
+        await client.messageMove(uids.join(','), destFolder, { uid: true });
+      } finally {
+        moveLock.release();
+      }
+
+      const afterStatus = await client.status(folder, { messages: true });
+      const after = afterStatus.messages ?? 0;
+      const moved = before - after;
+
+      return {
+        success: moved === uids.length,
+        requested: uids.length,
+        moved,
+        destination: destFolder,
+        sourceFolder: folder,
+        uids,
+      };
+    });
+  }
+
+  async searchUidsBySender(folder: string, senderAddress: string): Promise<number[]> {
     return this.withConnection(async (client) => {
       const lock = await client.getMailboxLock(folder);
       try {
-        const searchResult = await client.search(criteria, { uid: true });
-        const uids: number[] = searchResult === false ? [] : searchResult;
-        if (uids.length === 0) return { moved: 0, uids: [] };
-        const range = uids.join(',');
-        await client.messageMove(range, destFolder, { uid: true });
-        return { moved: uids.length, uids };
+        const result = await client.search({ from: senderAddress }, { uid: true });
+        return result === false ? [] : result;
       } finally {
         lock.release();
       }

@@ -85,8 +85,19 @@ export async function batchApplyLabelHandler(
 
 export async function batchDeleteHandler(
   imap: ImapClientManager,
-  params: { folder: string; uids: number[] }
+  params: { folder: string; uids: number[]; dryRun?: boolean }
 ): Promise<ToolResult> {
+  if (params.dryRun) {
+    return {
+      content: [{ type: 'text', text: JSON.stringify({
+        dryRun: true,
+        wouldAffect: params.uids.length,
+        uids: params.uids,
+        sourceFolder: params.folder,
+        destination: 'Trash',
+      }) }],
+    };
+  }
   const result = await imap.batchMoveMessages(params.folder, params.uids, 'Trash');
   return {
     content: [{ type: 'text', text: JSON.stringify({ action: 'batch_deleted', ...result }) }],
@@ -95,21 +106,48 @@ export async function batchDeleteHandler(
 
 export async function crossFolderBatchMoveHandler(
   imap: ImapClientManager,
-  params: { items: Array<{ uid: number; sourceFolder: string }>; destinationFolder: string }
+  params: { items: Array<{ uid: number; sourceFolder: string }>; destinationFolder: string; dryRun?: boolean }
 ): Promise<ToolResult> {
+  if (params.dryRun) {
+    const grouped: Record<string, number[]> = {};
+    for (const item of params.items) {
+      (grouped[item.sourceFolder] ||= []).push(item.uid);
+    }
+    return {
+      content: [{ type: 'text', text: JSON.stringify({
+        dryRun: true,
+        wouldAffect: params.items.length,
+        byFolder: grouped,
+        destination: params.destinationFolder,
+      }) }],
+    };
+  }
   const result = await imap.crossFolderBatchMove(params.items, params.destinationFolder);
   return {
-    content: [{ type: 'text', text: JSON.stringify({ success: true, action: 'cross_folder_batch_moved', ...result, to: params.destinationFolder }) }],
+    content: [{ type: 'text', text: JSON.stringify({ action: 'cross_folder_batch_moved', success: true, ...result, to: params.destinationFolder }) }],
   };
 }
 
 export async function moveBySenderHandler(
   imap: ImapClientManager,
-  params: { sourceFolder: string; senderAddress: string; destinationFolder: string }
+  params: { sourceFolder: string; senderAddress: string; destinationFolder: string; dryRun?: boolean }
 ): Promise<ToolResult> {
+  if (params.dryRun) {
+    const uids = await imap.searchUidsBySender(params.sourceFolder, params.senderAddress);
+    return {
+      content: [{ type: 'text', text: JSON.stringify({
+        dryRun: true,
+        wouldAffect: uids.length,
+        uids,
+        sourceFolder: params.sourceFolder,
+        destination: params.destinationFolder,
+        sender: params.senderAddress,
+      }) }],
+    };
+  }
   const result = await imap.moveBySender(params.sourceFolder, params.senderAddress, params.destinationFolder);
   return {
-    content: [{ type: 'text', text: JSON.stringify({ success: true, action: 'moved_by_sender', sender: params.senderAddress, ...result, to: params.destinationFolder }) }],
+    content: [{ type: 'text', text: JSON.stringify({ action: 'moved_by_sender', sender: params.senderAddress, ...result }) }],
   };
 }
 
@@ -146,6 +184,7 @@ export async function moveBySearchHandler(
     since?: string;
     before?: string;
     unreadOnly?: boolean;
+    dryRun?: boolean;
   }
 ): Promise<ToolResult> {
   const criteria: Record<string, unknown> = {};
@@ -163,8 +202,22 @@ export async function moveBySearchHandler(
     };
   }
 
+  if (params.dryRun) {
+    const uids = await imap.searchMessages(params.sourceFolder, criteria);
+    return {
+      content: [{ type: 'text', text: JSON.stringify({
+        dryRun: true,
+        wouldAffect: uids.length,
+        uids,
+        sourceFolder: params.sourceFolder,
+        destination: params.destinationFolder,
+        criteria,
+      }) }],
+    };
+  }
+
   const result = await imap.moveBySearch(params.sourceFolder, criteria, params.destinationFolder);
   return {
-    content: [{ type: 'text', text: JSON.stringify({ success: true, action: 'moved_by_search', ...result, to: params.destinationFolder }) }],
+    content: [{ type: 'text', text: JSON.stringify({ action: 'moved_by_search', ...result }) }],
   };
 }

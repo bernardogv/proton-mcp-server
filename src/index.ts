@@ -308,47 +308,50 @@ server.registerTool('batch_remove_label', {
 
 server.registerTool('batch_delete_messages', {
   title: 'Batch Delete Messages',
-  description: 'Move multiple messages to Trash in a single operation',
+  description: 'Move multiple messages to Trash. Pre-validates Trash exists, post-verifies count. Use dryRun:true to preview.',
   inputSchema: z.object({
     folder: z.string().describe('Current folder of the messages'),
     uids: z.array(z.number()).min(1).max(500).describe('Array of message UIDs to delete (max 500)'),
+    dryRun: z.boolean().default(false).describe('If true, preview without mutating.'),
   }),
-}, async ({ folder, uids }) => {
+}, async ({ folder, uids, dryRun }) => {
   await imap.connect();
-  return batchDeleteHandler(imap, { folder, uids });
+  return batchDeleteHandler(imap, { folder, uids, dryRun });
 });
 
 server.registerTool('cross_folder_batch_move', {
   title: 'Cross-Folder Batch Move',
-  description: 'Move messages from multiple source folders to one destination in a single call. Each item specifies its own sourceFolder.',
+  description: 'Move messages from multiple source folders to one destination. Each item specifies its own sourceFolder. Use dryRun:true to preview.',
   inputSchema: z.object({
     items: z.array(z.object({
       uid: z.number().describe('Message UID'),
       sourceFolder: z.string().describe('Folder this message is currently in'),
     })).min(1).max(500).describe('Array of messages with their source folders (max 500)'),
     destinationFolder: z.string().describe('Target folder for all messages'),
+    dryRun: z.boolean().default(false).describe('If true, preview without mutating.'),
   }),
-}, async ({ items, destinationFolder }) => {
+}, async ({ items, destinationFolder, dryRun }) => {
   await imap.connect();
-  return crossFolderBatchMoveHandler(imap, { items, destinationFolder });
+  return crossFolderBatchMoveHandler(imap, { items, destinationFolder, dryRun });
 });
 
 server.registerTool('move_by_sender', {
   title: 'Move by Sender',
-  description: 'Move all messages from a specific sender to a destination folder. Search + move in one call.',
+  description: 'Move all messages from a specific sender to a destination folder. Use dryRun:true to preview the UIDs that would be moved.',
   inputSchema: z.object({
     sourceFolder: z.string().describe('Folder to search in'),
     senderAddress: z.string().describe('Sender email address to match'),
     destinationFolder: z.string().describe('Target folder'),
+    dryRun: z.boolean().default(false).describe('If true, preview without mutating.'),
   }),
-}, async ({ sourceFolder, senderAddress, destinationFolder }) => {
+}, async ({ sourceFolder, senderAddress, destinationFolder, dryRun }) => {
   await imap.connect();
-  return moveBySenderHandler(imap, { sourceFolder, senderAddress, destinationFolder });
+  return moveBySenderHandler(imap, { sourceFolder, senderAddress, destinationFolder, dryRun });
 });
 
 server.registerTool('move_by_search', {
   title: 'Move by Search',
-  description: 'Search for messages matching criteria and move all matches to a destination folder. Search + move in one call. Requires at least one search criterion.',
+  description: 'Search for messages matching criteria and move all matches to a destination folder. Requires at least one search criterion. Use dryRun:true to preview the UIDs that would be moved.',
   inputSchema: z.object({
     sourceFolder: z.string().describe('Folder to search in'),
     destinationFolder: z.string().describe('Target folder for matched messages'),
@@ -359,6 +362,7 @@ server.registerTool('move_by_search', {
     since: z.string().optional().describe('Messages since date (ISO 8601)'),
     before: z.string().optional().describe('Messages before date (ISO 8601)'),
     unreadOnly: z.boolean().default(false).describe('Only match unread messages'),
+    dryRun: z.boolean().default(false).describe('If true, preview without mutating.'),
   }),
 }, async (params) => {
   await imap.connect();
