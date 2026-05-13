@@ -9,6 +9,8 @@ interface SendEmailOptions {
   body: string;
   isHtml?: boolean;
   inReplyTo?: string;
+  references?: string;
+  attachments?: Array<{ filename: string; contentBase64: string; mimeType?: string }>;
 }
 
 export class SmtpClient {
@@ -41,12 +43,23 @@ export class SmtpClient {
       ...(options.isHtml ? { html: options.body } : { text: options.body }),
       ...(options.inReplyTo && {
         inReplyTo: options.inReplyTo,
-        references: options.inReplyTo,
+        references: options.references || options.inReplyTo,
+      }),
+      ...(options.attachments && options.attachments.length > 0 && {
+        attachments: options.attachments.map(att => ({
+          filename: att.filename,
+          content: Buffer.from(att.contentBase64, 'base64'),
+          contentType: att.mimeType || 'application/octet-stream',
+        })),
       }),
     };
 
     const result = await this.transporter.sendMail(mailOptions);
     return { messageId: result.messageId };
+  }
+
+  getUsername(): string {
+    return this.username;
   }
 
   close(): void {

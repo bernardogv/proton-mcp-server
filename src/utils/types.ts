@@ -32,6 +32,9 @@ export interface MessageSummary {
 
 export interface MessageFull extends MessageSummary {
   cc: string[];
+  messageId: string;
+  inReplyTo: string;
+  references: string;
   textBody: string;
   htmlBody: string;
   attachments: AttachmentMeta[];

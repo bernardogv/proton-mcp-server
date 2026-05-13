@@ -119,11 +119,20 @@ export class ImapClientManager {
         const { simpleParser } = await import('mailparser');
         const parsed = await simpleParser(msg.source);
 
+        // Build references string from parsed headers
+        let referencesStr = '';
+        if (parsed.references) {
+          referencesStr = Array.isArray(parsed.references) ? parsed.references.join(' ') : parsed.references;
+        }
+
         return {
           uid: msg.uid,
           from: parsed.from?.text || 'unknown',
           to: parsed.to ? (Array.isArray(parsed.to) ? parsed.to.map(t => t.text) : [parsed.to.text]) : [],
           cc: parsed.cc ? (Array.isArray(parsed.cc) ? parsed.cc.map(c => c.text) : [parsed.cc.text]) : [],
+          messageId: parsed.messageId || '',
+          inReplyTo: (parsed.inReplyTo as string) || '',
+          references: referencesStr,
           subject: parsed.subject || '(no subject)',
           date: parsed.date?.toISOString() || '',
           flags: Array.from(msg.flags || []),
@@ -494,13 +503,30 @@ export class ImapClientManager {
           envelope: true,
           flags: true,
           bodyStructure: true,
-          bodyParts: ['1'],
+          bodyParts: ['1', '1.1'],
         }, { uid: true })) {
           const summary = this.parseMessageSummary(msg);
           let snippet = '';
-          const bodyPart = msg.bodyParts?.get('1');
-          if (bodyPart) {
-            const text = bodyPart.toString('utf-8');
+          // Prefer part 1.1 (text/plain in multipart) over part 1 (often HTML)
+          const textPart = msg.bodyParts?.get('1.1') || msg.bodyParts?.get('1');
+          if (textPart) {
+            let text = textPart.toString('utf-8');
+            // Strip HTML tags if present
+            if (text.includes('<') && (text.includes('</') || text.includes('/>'))) {
+              text = text
+                .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+                .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+                .replace(/<[^>]+>/g, ' ')
+                .replace(/&nbsp;/gi, ' ')
+                .replace(/&amp;/gi, '&')
+                .replace(/&lt;/gi, '<')
+                .replace(/&gt;/gi, '>')
+                .replace(/&quot;/gi, '"')
+                .replace(/&#39;/gi, "'")
+                .replace(/=\r?\n/g, '')       // quoted-printable soft breaks
+                .replace(/=3D/gi, '=')         // quoted-printable equals
+                .replace(/\s+/g, ' ');
+            }
             snippet = text.replace(/[\r\n\t]+/g, ' ').trim().slice(0, snippetLength);
           }
           messages.push({ ...summary, snippet });
@@ -597,6 +623,48 @@ export class ImapClientManager {
       } finally {
         lock.release();
       }
+    });
+  }
+
+  async getLabelsForMessage(folder: string, uid: number): Promise<{ labels: string[]; messageId: string }> {
+    return this.withConnection(async (client) => {
+      // 1. Read the target message to get its Message-ID header
+      const lock = await client.getMailboxLock(folder);
+      let messageId: string;
+      try {
+        const msg = await client.fetchOne(String(uid), {
+          uid: true,
+          envelope: true,
+        }, { uid: true });
+        if (!msg) throw new Error(`Message UID ${uid} not found in folder ${folder}`);
+        messageId = msg.envelope?.messageId || '';
+        if (!messageId) throw new Error(`Message UID ${uid} has no Message-ID header`);
+      } finally {
+        lock.release();
+      }
+
+      // 2. List all mailbox folders, filter to those under Labels/
+      const mailboxes = await client.list();
+      const labelFolders = mailboxes.filter(mb => mb.path.startsWith('Labels/'));
+
+      // 3. For each label folder, search by Message-ID header
+      const labels: string[] = [];
+      for (const lf of labelFolders) {
+        const lfLock = await client.getMailboxLock(lf.path);
+        try {
+          const result = await client.search({ header: { 'message-id': messageId } }, { uid: true });
+          const uids: number[] = result === false ? [] : result;
+          if (uids.length > 0) {
+            labels.push(lf.path);
+          }
+        } catch {
+          // skip folders that can't be searched
+        } finally {
+          lfLock.release();
+        }
+      }
+
+      return { labels, messageId };
     });
   }
 

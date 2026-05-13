@@ -61,6 +61,26 @@ export async function batchMarkUnreadHandler(
   };
 }
 
+export async function batchStarHandler(
+  imap: ImapClientManager,
+  params: { folder: string; uids: number[] }
+): Promise<ToolResult> {
+  const result = await imap.batchAddFlags(params.folder, params.uids, ['\\Flagged']);
+  return {
+    content: [{ type: 'text', text: JSON.stringify({ success: true, action: 'batch_starred', ...result }) }],
+  };
+}
+
+export async function batchUnstarHandler(
+  imap: ImapClientManager,
+  params: { folder: string; uids: number[] }
+): Promise<ToolResult> {
+  const result = await imap.batchRemoveFlags(params.folder, params.uids, ['\\Flagged']);
+  return {
+    content: [{ type: 'text', text: JSON.stringify({ success: true, action: 'batch_unstarred', ...result }) }],
+  };
+}
+
 export async function markAllReadHandler(
   imap: ImapClientManager,
   params: { folder: string }

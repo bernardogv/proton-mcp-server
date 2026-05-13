@@ -2,9 +2,13 @@ import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
+// Suppress dotenv v17 stdout banner — it corrupts MCP stdio protocol
+const _origLog = console.log;
+console.log = () => {};
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 dotenv.config({ path: join(__dirname, '..', '.env') });
+console.log = _origLog;
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -13,10 +17,10 @@ import { loadConfig } from './utils/config.js';
 import { ImapClientManager } from './imap-client.js';
 import { SmtpClient } from './smtp-client.js';
 import { listFoldersHandler, createFolderHandler, deleteFolderHandler, renameFolderHandler, getFolderStatsHandler } from './tools/folders.js';
-import { getMessagesHandler, readMessageHandler, searchMessagesHandler, getSenderSummaryHandler, getInboxDigestHandler, getMessagesWithSnippetsHandler, getThreadHandler, getUnreadCountHandler } from './tools/messages.js';
-import { moveMessageHandler, applyLabelHandler, removeLabelHandler, deleteMessageHandler, batchMoveHandler, batchApplyLabelHandler, batchDeleteHandler, crossFolderBatchMoveHandler, moveBySenderHandler, moveBySearchHandler } from './tools/organize.js';
-import { markReadHandler, markUnreadHandler, starMessageHandler, unstarMessageHandler, batchMarkReadHandler, batchMarkUnreadHandler, markAllReadHandler } from './tools/flags.js';
-import { sendEmailHandler } from './tools/send.js';
+import { getMessagesHandler, readMessageHandler, searchMessagesHandler, getSenderSummaryHandler, getInboxDigestHandler, getMessagesWithSnippetsHandler, getThreadHandler, getUnreadCountHandler, getLabelsForMessageHandler } from './tools/messages.js';
+import { moveMessageHandler, applyLabelHandler, removeLabelHandler, deleteMessageHandler, batchMoveHandler, batchApplyLabelHandler, batchRemoveLabelHandler, batchDeleteHandler, crossFolderBatchMoveHandler, moveBySenderHandler, moveBySearchHandler } from './tools/organize.js';
+import { markReadHandler, markUnreadHandler, starMessageHandler, unstarMessageHandler, batchMarkReadHandler, batchMarkUnreadHandler, batchStarHandler, batchUnstarHandler, markAllReadHandler } from './tools/flags.js';
+import { sendEmailHandler, replyMessageHandler, forwardMessageHandler } from './tools/send.js';
 import { getAttachmentHandler } from './tools/attachments.js';
 
 const config = loadConfig();
@@ -195,6 +199,18 @@ server.registerTool('get_sender_summary', {
   return getSenderSummaryHandler(imap, { folder, limit });
 });
 
+server.registerTool('get_labels_for_message', {
+  title: 'Get Labels for Message',
+  description: 'Check which labels are applied to a message by searching all label folders for it',
+  inputSchema: z.object({
+    folder: z.string().describe('Folder containing the message'),
+    uid: z.number().describe('Message UID'),
+  }),
+}, async ({ folder, uid }) => {
+  await imap.connect();
+  return getLabelsForMessageHandler(imap, { folder, uid });
+});
+
 // --- Organization tools ---
 
 server.registerTool('move_message', {
@@ -273,6 +289,18 @@ server.registerTool('batch_apply_label', {
 }, async ({ sourceFolder, uids, labelFolder }) => {
   await imap.connect();
   return batchApplyLabelHandler(imap, { sourceFolder, uids, labelFolder });
+});
+
+server.registerTool('batch_remove_label', {
+  title: 'Batch Remove Label',
+  description: 'Remove a label from multiple messages at once',
+  inputSchema: z.object({
+    labelFolder: z.string().describe('Label folder to remove messages from'),
+    uids: z.array(z.number()).min(1).max(500).describe('Array of message UIDs within the label folder (max 500)'),
+  }),
+}, async ({ labelFolder, uids }) => {
+  await imap.connect();
+  return batchRemoveLabelHandler(imap, { labelFolder, uids });
 });
 
 server.registerTool('batch_delete_messages', {
@@ -410,6 +438,30 @@ server.registerTool('batch_mark_unread', {
   return batchMarkUnreadHandler(imap, { folder, uids });
 });
 
+server.registerTool('batch_star', {
+  title: 'Batch Star',
+  description: 'Star/flag multiple messages in a single operation',
+  inputSchema: z.object({
+    folder: z.string().describe('Folder containing the messages'),
+    uids: z.array(z.number()).min(1).max(500).describe('Array of message UIDs to star (max 500)'),
+  }),
+}, async ({ folder, uids }) => {
+  await imap.connect();
+  return batchStarHandler(imap, { folder, uids });
+});
+
+server.registerTool('batch_unstar', {
+  title: 'Batch Unstar',
+  description: 'Remove star/flag from multiple messages in a single operation',
+  inputSchema: z.object({
+    folder: z.string().describe('Folder containing the messages'),
+    uids: z.array(z.number()).min(1).max(500).describe('Array of message UIDs to unstar (max 500)'),
+  }),
+}, async ({ folder, uids }) => {
+  await imap.connect();
+  return batchUnstarHandler(imap, { folder, uids });
+});
+
 server.registerTool('mark_all_read', {
   title: 'Mark All Read',
   description: 'Mark all unread messages in a folder as read. No need to fetch UIDs first.',
@@ -425,7 +477,7 @@ server.registerTool('mark_all_read', {
 
 server.registerTool('send_email', {
   title: 'Send Email',
-  description: 'Send an email via SMTP through Proton Bridge',
+  description: 'Send a NEW standalone email. WARNING: Do NOT use this for replying to existing threads — use reply_message instead, which handles threading headers automatically. Use dryRun: true to preview before sending.',
   inputSchema: z.object({
     to: z.array(z.string().email()).min(1).describe('Recipient email addresses'),
     cc: z.array(z.string().email()).optional().describe('CC recipients'),
@@ -434,9 +486,46 @@ server.registerTool('send_email', {
     body: z.string().describe('Email body (text or HTML)'),
     isHtml: z.boolean().default(false).describe('Whether body is HTML'),
     inReplyTo: z.string().regex(/^<[^>]+>$/, 'Must be a valid Message-ID (e.g. <id@domain>)').optional().describe('Message-ID to reply to (for threading)'),
+    dryRun: z.boolean().default(false).describe('If true, returns a preview of the email without sending. Always preview before sending.'),
+    attachments: z.array(z.object({
+      filename: z.string().describe('Attachment filename'),
+      contentBase64: z.string().describe('Base64-encoded file content'),
+      mimeType: z.string().optional().describe('MIME type (defaults to application/octet-stream)'),
+    })).optional().describe('File attachments'),
   }),
 }, async (params) => {
   return sendEmailHandler(smtp, params);
+});
+
+server.registerTool('reply_message', {
+  title: 'Reply to Message',
+  description: 'Reply to an email with proper threading. Reads the original message, sets In-Reply-To and References headers, handles recipients (reply or reply-all), quotes the original body, and sends. Use this instead of send_email when replying to an existing email. Use dryRun: true to preview before sending.',
+  inputSchema: z.object({
+    folder: z.string().describe('Folder containing the message to reply to'),
+    uid: z.number().describe('UID of the message to reply to'),
+    body: z.string().describe('Reply body text'),
+    isHtml: z.boolean().default(false).describe('Whether body is HTML'),
+    replyAll: z.boolean().default(false).describe('If true, reply to all recipients (To + CC). If false, reply only to the sender.'),
+    dryRun: z.boolean().default(false).describe('If true, returns a preview of the reply without sending. Always preview before sending.'),
+  }),
+}, async (params) => {
+  await imap.connect();
+  return replyMessageHandler(imap, smtp, params);
+});
+
+server.registerTool('forward_message', {
+  title: 'Forward Message',
+  description: 'Forward an email to new recipients. Reads the original message, builds a forwarded email with quoted headers and original body, and includes any attachments.',
+  inputSchema: z.object({
+    folder: z.string().describe('Folder containing the message to forward'),
+    uid: z.number().describe('UID of the message to forward'),
+    to: z.array(z.string().email()).min(1).describe('Recipient email addresses'),
+    cc: z.array(z.string().email()).optional().describe('CC recipients'),
+    body: z.string().optional().describe('Optional note to prepend above the forwarded message'),
+  }),
+}, async (params) => {
+  await imap.connect();
+  return forwardMessageHandler(imap, smtp, params);
 });
 
 // --- Attachment tool ---

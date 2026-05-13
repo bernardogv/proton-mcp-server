@@ -91,6 +91,16 @@ export async function moveBySenderHandler(
   };
 }
 
+export async function batchRemoveLabelHandler(
+  imap: ImapClientManager,
+  params: { labelFolder: string; uids: number[] }
+): Promise<ToolResult> {
+  const result = await imap.batchMoveMessages(params.labelFolder, params.uids, 'INBOX');
+  return {
+    content: [{ type: 'text', text: JSON.stringify({ success: true, action: 'batch_label_removed', ...result, removedFrom: params.labelFolder }) }],
+  };
+}
+
 export async function moveBySearchHandler(
   imap: ImapClientManager,
   params: {

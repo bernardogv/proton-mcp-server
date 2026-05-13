@@ -118,6 +118,16 @@ export async function getThreadHandler(
   };
 }
 
+export async function getLabelsForMessageHandler(
+  imap: ImapClientManager,
+  params: { folder: string; uid: number }
+): Promise<ToolResult> {
+  const result = await imap.getLabelsForMessage(params.folder, params.uid);
+  return {
+    content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+  };
+}
+
 export async function getUnreadCountHandler(
   imap: ImapClientManager,
   params: { folder: string }
