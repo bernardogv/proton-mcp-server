@@ -22,12 +22,14 @@
     "imapflow": "^1.2.16",
     "mailparser": "^3.9.4",
     "nodemailer": "^8.0.3",
+    "pdf-parse": "^2.4.5",
     "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/mailparser": "^3.4.6",
     "@types/node": "^25.5.0",
     "@types/nodemailer": "^7.0.11",
+    "@types/pdf-parse": "^1.1.5",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "vitest": "^1.0.4"

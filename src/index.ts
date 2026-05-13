@@ -21,7 +21,7 @@ import { getMessagesHandler, readMessageHandler, searchMessagesHandler, getSende
 import { moveMessageHandler, applyLabelHandler, removeLabelHandler, deleteMessageHandler, batchMoveHandler, batchApplyLabelHandler, batchRemoveLabelHandler, batchDeleteHandler, crossFolderBatchMoveHandler, moveBySenderHandler, moveBySearchHandler } from './tools/organize.js';
 import { markReadHandler, markUnreadHandler, starMessageHandler, unstarMessageHandler, batchMarkReadHandler, batchMarkUnreadHandler, batchStarHandler, batchUnstarHandler, markAllReadHandler } from './tools/flags.js';
 import { sendEmailHandler, replyMessageHandler, forwardMessageHandler } from './tools/send.js';
-import { getAttachmentHandler } from './tools/attachments.js';
+import { getAttachmentHandler, getAttachmentTextHandler } from './tools/attachments.js';
 import { getChangesSinceHandler } from './tools/changes.js';
 import { routeHandler, batchRouteHandler } from './tools/route.js';
 import { suggestSenderRoutesHandler } from './tools/intelligence.js';
@@ -605,6 +605,20 @@ server.registerTool('get_attachment', {
 }, async ({ folder, uid, attachmentPartId }) => {
   await imap.connect();
   return getAttachmentHandler(imap, { folder, uid, attachmentPartId });
+});
+
+server.registerTool('get_attachment_text', {
+  title: 'Get Attachment Text',
+  description: 'Extract plain text from an attachment. Supports application/pdf (via pdf-parse) and text/* MIME types. Returns truncated text up to maxChars.',
+  inputSchema: z.object({
+    folder: z.string().describe('Folder containing the message'),
+    uid: z.number().describe('Message UID'),
+    attachmentPartId: z.string().describe('Attachment part ID from the message'),
+    maxChars: z.number().min(100).max(200000).default(20000).describe('Max characters to return (default 20000)'),
+  }),
+}, async ({ folder, uid, attachmentPartId, maxChars }) => {
+  await imap.connect();
+  return getAttachmentTextHandler(imap, { folder, uid, attachmentPartId, maxChars });
 });
 
 // --- Start server ---
