@@ -325,17 +325,43 @@ export class ImapClientManager {
     });
   }
 
-  async batchCopyMessages(sourceFolder: string, uids: number[], destFolder: string): Promise<{ copied: number }> {
-    if (uids.length === 0) return { copied: 0 };
+  async batchCopyMessages(
+    sourceFolder: string,
+    uids: number[],
+    destFolder: string,
+  ): Promise<BatchResult> {
+    if (uids.length === 0) {
+      return { success: true, requested: 0, copied: 0, label: destFolder, sourceFolder };
+    }
     return this.withConnection(async (client) => {
+      const mailboxes = await client.list();
+      const paths = new Set(mailboxes.map((m) => m.path));
+      assertFolderExists(paths, sourceFolder);
+      assertFolderExists(paths, destFolder);
+
+      // Capture destination size before
+      const beforeStatus = await client.status(destFolder, { messages: true });
+      const before = beforeStatus.messages ?? 0;
+
       const lock = await client.getMailboxLock(sourceFolder);
       try {
         const range = uids.join(',');
         await client.messageCopy(range, destFolder, { uid: true });
-        return { copied: uids.length };
       } finally {
         lock.release();
       }
+
+      const afterStatus = await client.status(destFolder, { messages: true });
+      const after = afterStatus.messages ?? 0;
+      const copied = after - before;
+
+      return {
+        success: copied === uids.length,
+        requested: uids.length,
+        copied,
+        label: destFolder,
+        sourceFolder,
+      };
     });
   }
 

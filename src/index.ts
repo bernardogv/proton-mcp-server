@@ -281,27 +281,29 @@ server.registerTool('batch_move_messages', {
 
 server.registerTool('batch_apply_label', {
   title: 'Batch Apply Label',
-  description: 'Apply a label to multiple messages in a single operation',
+  description: 'Apply a label to multiple messages. Pre-validates folders, post-verifies copy count. Returns {success, requested, copied}. Use dryRun:true to preview.',
   inputSchema: z.object({
     sourceFolder: z.string().describe('Current folder of the messages'),
     uids: z.array(z.number()).min(1).max(500).describe('Array of message UIDs to label (max 500)'),
     labelFolder: z.string().describe('Label folder to apply'),
+    dryRun: z.boolean().default(false).describe('If true, preview without mutating.'),
   }),
-}, async ({ sourceFolder, uids, labelFolder }) => {
+}, async ({ sourceFolder, uids, labelFolder, dryRun }) => {
   await imap.connect();
-  return batchApplyLabelHandler(imap, { sourceFolder, uids, labelFolder });
+  return batchApplyLabelHandler(imap, { sourceFolder, uids, labelFolder, dryRun });
 });
 
 server.registerTool('batch_remove_label', {
   title: 'Batch Remove Label',
-  description: 'Remove a label from multiple messages at once',
+  description: 'Remove a label from multiple messages. Moves them back to INBOX. Returns {success, requested, moved}. Use dryRun:true to preview.',
   inputSchema: z.object({
     labelFolder: z.string().describe('Label folder to remove messages from'),
     uids: z.array(z.number()).min(1).max(500).describe('Array of message UIDs within the label folder (max 500)'),
+    dryRun: z.boolean().default(false).describe('If true, preview without mutating.'),
   }),
-}, async ({ labelFolder, uids }) => {
+}, async ({ labelFolder, uids, dryRun }) => {
   await imap.connect();
-  return batchRemoveLabelHandler(imap, { labelFolder, uids });
+  return batchRemoveLabelHandler(imap, { labelFolder, uids, dryRun });
 });
 
 server.registerTool('batch_delete_messages', {

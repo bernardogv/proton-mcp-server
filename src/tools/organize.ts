@@ -64,11 +64,22 @@ export async function batchMoveHandler(
 
 export async function batchApplyLabelHandler(
   imap: ImapClientManager,
-  params: { sourceFolder: string; uids: number[]; labelFolder: string }
+  params: { sourceFolder: string; uids: number[]; labelFolder: string; dryRun?: boolean }
 ): Promise<ToolResult> {
+  if (params.dryRun) {
+    return {
+      content: [{ type: 'text', text: JSON.stringify({
+        dryRun: true,
+        wouldAffect: params.uids.length,
+        uids: params.uids,
+        sourceFolder: params.sourceFolder,
+        label: params.labelFolder,
+      }) }],
+    };
+  }
   const result = await imap.batchCopyMessages(params.sourceFolder, params.uids, params.labelFolder);
   return {
-    content: [{ type: 'text', text: JSON.stringify({ success: true, action: 'batch_labeled', ...result, label: params.labelFolder }) }],
+    content: [{ type: 'text', text: JSON.stringify({ action: 'batch_labeled', ...result }) }],
   };
 }
 
@@ -104,8 +115,19 @@ export async function moveBySenderHandler(
 
 export async function batchRemoveLabelHandler(
   imap: ImapClientManager,
-  params: { labelFolder: string; uids: number[] }
+  params: { labelFolder: string; uids: number[]; dryRun?: boolean }
 ): Promise<ToolResult> {
+  if (params.dryRun) {
+    return {
+      content: [{ type: 'text', text: JSON.stringify({
+        dryRun: true,
+        wouldAffect: params.uids.length,
+        uids: params.uids,
+        sourceFolder: params.labelFolder,
+        destination: 'INBOX',
+      }) }],
+    };
+  }
   const result = await imap.batchMoveMessages(params.labelFolder, params.uids, 'INBOX');
   return {
     content: [{ type: 'text', text: JSON.stringify({ action: 'batch_label_removed', ...result, removedFrom: params.labelFolder }) }],
