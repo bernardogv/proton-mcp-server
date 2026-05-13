@@ -1,5 +1,6 @@
 import { ImapFlow } from 'imapflow';
-import type { BridgeConfig, FolderInfo, FolderStats, MessageSummary, MessageFull, AttachmentMeta, AttachmentSummary, SenderSummary } from './utils/types.js';
+import type { BridgeConfig, FolderInfo, FolderStats, MessageSummary, MessageFull, AttachmentMeta, AttachmentSummary, SenderSummary, BatchResult, SnippetMessage, SenderSummaryWithClusters, ChangesSinceResult, RouteResult } from './utils/types.js';
+import { assertFolderExists } from './utils/folder-validation.js';
 
 export class ImapClientManager {
   private config: BridgeConfig;
@@ -42,6 +43,18 @@ export class ImapClientManager {
         .replace(new RegExp(this.config.username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), '***');
       throw new Error(sanitized);
     }
+  }
+
+  /** Assert that all named folder paths exist; throws if any are missing */
+  async assertFoldersExist(paths: string[]): Promise<void> {
+    if (paths.length === 0) return;
+    return this.withConnection(async (client) => {
+      const mailboxes = await client.list();
+      const known = new Set(mailboxes.map((m) => m.path));
+      for (const p of paths) {
+        assertFolderExists(known, p);
+      }
+    });
   }
 
   // Keep connect/disconnect for backward compat with tests
@@ -166,6 +179,10 @@ export class ImapClientManager {
 
   async moveMessage(sourceFolder: string, uid: number, destFolder: string): Promise<void> {
     return this.withConnection(async (client) => {
+      const mailboxes = await client.list();
+      const paths = new Set(mailboxes.map((m) => m.path));
+      assertFolderExists(paths, sourceFolder);
+      assertFolderExists(paths, destFolder);
       const lock = await client.getMailboxLock(sourceFolder);
       try {
         await client.messageMove(String(uid), destFolder, { uid: true });
@@ -177,6 +194,10 @@ export class ImapClientManager {
 
   async copyMessage(sourceFolder: string, uid: number, destFolder: string): Promise<void> {
     return this.withConnection(async (client) => {
+      const mailboxes = await client.list();
+      const paths = new Set(mailboxes.map((m) => m.path));
+      assertFolderExists(paths, sourceFolder);
+      assertFolderExists(paths, destFolder);
       const lock = await client.getMailboxLock(sourceFolder);
       try {
         await client.messageCopy(String(uid), destFolder, { uid: true });
@@ -269,31 +290,98 @@ export class ImapClientManager {
     });
   }
 
-  async batchMoveMessages(sourceFolder: string, uids: number[], destFolder: string): Promise<{ moved: number }> {
-    if (uids.length === 0) return { moved: 0 };
+  async batchMoveMessages(
+    sourceFolder: string,
+    uids: number[],
+    destFolder: string,
+  ): Promise<BatchResult> {
+    if (uids.length === 0) {
+      return { success: true, requested: 0, moved: 0, destination: destFolder, sourceFolder };
+    }
     return this.withConnection(async (client) => {
+      const mailboxes = await client.list();
+      const paths = new Set(mailboxes.map((m) => m.path));
+      assertFolderExists(paths, sourceFolder);
+      assertFolderExists(paths, destFolder);
+
+      // Capture source size before
+      const beforeStatus = await client.status(sourceFolder, { messages: true });
+      const before = beforeStatus.messages ?? 0;
+
+      // Run the move under a lock
       const lock = await client.getMailboxLock(sourceFolder);
       try {
         const range = uids.join(',');
         await client.messageMove(range, destFolder, { uid: true });
-        return { moved: uids.length };
       } finally {
         lock.release();
       }
+
+      // Capture source size after
+      const afterStatus = await client.status(sourceFolder, { messages: true });
+      const after = afterStatus.messages ?? 0;
+      const moved = before - after;
+
+      // If under-counted, find which requested UIDs still exist in source
+      let failedUids: number[] | undefined;
+      if (moved < uids.length) {
+        const checkLock = await client.getMailboxLock(sourceFolder);
+        try {
+          const result = await client.search({ uid: uids.join(',') }, { uid: true });
+          failedUids = result === false ? [] : result;
+        } finally {
+          checkLock.release();
+        }
+      }
+
+      return {
+        success: moved === uids.length,
+        requested: uids.length,
+        moved,
+        destination: destFolder,
+        sourceFolder,
+        ...(failedUids && { failedUids }),
+      };
     });
   }
 
-  async batchCopyMessages(sourceFolder: string, uids: number[], destFolder: string): Promise<{ copied: number }> {
-    if (uids.length === 0) return { copied: 0 };
+  async batchCopyMessages(
+    sourceFolder: string,
+    uids: number[],
+    destFolder: string,
+  ): Promise<BatchResult> {
+    if (uids.length === 0) {
+      return { success: true, requested: 0, copied: 0, label: destFolder, sourceFolder };
+    }
     return this.withConnection(async (client) => {
+      const mailboxes = await client.list();
+      const paths = new Set(mailboxes.map((m) => m.path));
+      assertFolderExists(paths, sourceFolder);
+      assertFolderExists(paths, destFolder);
+
+      // Capture destination size before
+      const beforeStatus = await client.status(destFolder, { messages: true });
+      const before = beforeStatus.messages ?? 0;
+
       const lock = await client.getMailboxLock(sourceFolder);
       try {
         const range = uids.join(',');
         await client.messageCopy(range, destFolder, { uid: true });
-        return { copied: uids.length };
       } finally {
         lock.release();
       }
+
+      const afterStatus = await client.status(destFolder, { messages: true });
+      const after = afterStatus.messages ?? 0;
+      const copied = after - before;
+
+      return {
+        success: copied === uids.length,
+        requested: uids.length,
+        copied,
+        label: destFolder,
+        sourceFolder,
+      };
     });
   }
 
@@ -341,8 +429,8 @@ export class ImapClientManager {
 
     for (const [folder, uids] of grouped) {
       const result = await this.batchMoveMessages(folder, uids, destFolder);
-      byFolder[folder] = result.moved;
-      totalMoved += result.moved;
+      byFolder[folder] = result.moved ?? 0;
+      totalMoved += result.moved ?? 0;
     }
 
     return { moved: totalMoved, byFolder };
@@ -414,8 +502,9 @@ export class ImapClientManager {
     folderStats: FolderStats[];
     inboxTotal: number;
     inboxUnread: number;
-    topSenders: SenderSummary[];
+    topSenders: SenderSummaryWithClusters[];
   }> {
+    const { clusterSubjects } = await import('./utils/clustering.js');
     return this.withConnection(async (client) => {
       const mailboxes = await client.list();
       const folderStats: FolderStats[] = [];
@@ -437,7 +526,7 @@ export class ImapClientManager {
         }
       }
 
-      let topSenders: SenderSummary[] = [];
+      let topSenders: SenderSummaryWithClusters[] = [];
       if (inboxTotal > 0) {
         const lock = await client.getMailboxLock(inboxFolder);
         try {
@@ -445,26 +534,52 @@ export class ImapClientManager {
           const uids: number[] = searchResult === false ? [] : searchResult;
           if (uids.length > 0) {
             const range = uids.join(',');
-            const senderMap = new Map<string, { name: string; count: number; latestDate: string; uids: number[] }>();
+            const senderMap = new Map<string, {
+              name: string;
+              count: number;
+              latestDate: string;
+              uids: number[];
+              subjects: Array<{ uid: number; subject: string }>;
+            }>();
             for await (const msg of client.fetch(range, { envelope: true }, { uid: true })) {
               const from = msg.envelope?.from?.[0];
               if (!from) continue;
               const address = (from.address || '').toLowerCase();
               const name = from.name || address;
               const date = msg.envelope?.date?.toISOString() || '';
+              const subject = msg.envelope?.subject || '';
               const existing = senderMap.get(address);
               if (existing) {
                 existing.count++;
                 existing.uids.push(msg.uid);
+                existing.subjects.push({ uid: msg.uid, subject });
                 if (date > existing.latestDate) existing.latestDate = date;
               } else {
-                senderMap.set(address, { name, count: 1, latestDate: date, uids: [msg.uid] });
+                senderMap.set(address, {
+                  name,
+                  count: 1,
+                  latestDate: date,
+                  uids: [msg.uid],
+                  subjects: [{ uid: msg.uid, subject }],
+                });
               }
             }
             const sorted = [...senderMap.entries()]
-              .map(([address, data]) => ({ sender: data.name, address, count: data.count, latestDate: data.latestDate, uids: data.uids }))
-              .sort((a, b) => b.count - a.count);
-            topSenders = sorted.slice(0, topSendersLimit);
+              .map(([address, data]) => ({
+                sender: data.name,
+                address,
+                count: data.count,
+                latestDate: data.latestDate,
+                uids: data.uids,
+                subjects: data.subjects,
+              }))
+              .sort((a, b) => b.count - a.count)
+              .slice(0, topSendersLimit);
+            topSenders = sorted.map((s) => {
+              const clusters = clusterSubjects(s.subjects);
+              const { subjects: _drop, ...rest } = s;
+              return clusters.length > 0 ? { ...rest, topClusters: clusters } : rest;
+            });
           }
         } finally {
           lock.release();
@@ -475,12 +590,18 @@ export class ImapClientManager {
     });
   }
 
-  async getMessagesWithSnippets(folder: string, limit: number, offset: number, unreadOnly: boolean, snippetLength: number): Promise<{ messages: Array<MessageSummary & { snippet: string }>; total: number }> {
+  async getMessagesWithSnippets(
+    folder: string,
+    limit: number,
+    offset: number,
+    unreadOnly: boolean,
+    snippetLength: number,
+  ): Promise<{ messages: SnippetMessage[]; total: number }> {
     return this.withConnection(async (client) => {
       const lock = await client.getMailboxLock(folder);
       try {
         const mailbox = client.mailbox;
-        if (!mailbox || mailbox.exists === 0) return { messages: [], total: 0 };
+        if (!mailbox || (mailbox as any).exists === 0) return { messages: [], total: 0 };
 
         let uids: number[];
         if (unreadOnly) {
@@ -496,40 +617,44 @@ export class ImapClientManager {
         const sliced = uids.slice(offset, offset + limit);
         if (sliced.length === 0) return { messages: [], total };
 
-        const messages: Array<MessageSummary & { snippet: string }> = [];
+        const messages: SnippetMessage[] = [];
         const range = sliced.join(',');
+
+        const { buildCleanSnippet } = await import('./utils/snippet.js');
 
         for await (const msg of client.fetch(range, {
           envelope: true,
           flags: true,
           bodyStructure: true,
-          bodyParts: ['1', '1.1'],
+          source: true,
         }, { uid: true })) {
           const summary = this.parseMessageSummary(msg);
-          let snippet = '';
-          // Prefer part 1.1 (text/plain in multipart) over part 1 (often HTML)
-          const textPart = msg.bodyParts?.get('1.1') || msg.bodyParts?.get('1');
-          if (textPart) {
-            let text = textPart.toString('utf-8');
-            // Strip HTML tags if present
-            if (text.includes('<') && (text.includes('</') || text.includes('/>'))) {
-              text = text
-                .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-                .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
-                .replace(/<[^>]+>/g, ' ')
-                .replace(/&nbsp;/gi, ' ')
-                .replace(/&amp;/gi, '&')
-                .replace(/&lt;/gi, '<')
-                .replace(/&gt;/gi, '>')
-                .replace(/&quot;/gi, '"')
-                .replace(/&#39;/gi, "'")
-                .replace(/=\r?\n/g, '')       // quoted-printable soft breaks
-                .replace(/=3D/gi, '=')         // quoted-printable equals
-                .replace(/\s+/g, ' ');
+          let snippetData: {
+            snippet: string;
+            hasUnsubscribe: boolean;
+            unsubscribeMailto?: string;
+            unsubscribeHttp?: string;
+            unsubscribeOneClick: boolean;
+          } = {
+            snippet: '',
+            hasUnsubscribe: false,
+            unsubscribeOneClick: false,
+          };
+          if (msg.source) {
+            try {
+              snippetData = await buildCleanSnippet(msg.source as Buffer, snippetLength);
+            } catch {
+              // fall through with empty snippet
             }
-            snippet = text.replace(/[\r\n\t]+/g, ' ').trim().slice(0, snippetLength);
           }
-          messages.push({ ...summary, snippet });
+          messages.push({
+            ...summary,
+            snippet: snippetData.snippet,
+            ...(snippetData.hasUnsubscribe && { hasUnsubscribe: true }),
+            ...(snippetData.unsubscribeMailto && { unsubscribeMailto: snippetData.unsubscribeMailto }),
+            ...(snippetData.unsubscribeHttp && { unsubscribeHttp: snippetData.unsubscribeHttp }),
+            ...(snippetData.unsubscribeOneClick && { unsubscribeOneClick: true }),
+          });
         }
 
         return { messages, total };
@@ -594,32 +719,100 @@ export class ImapClientManager {
     });
   }
 
-  async moveBySender(folder: string, senderAddress: string, destFolder: string): Promise<{ moved: number; uids: number[] }> {
+  async moveBySender(folder: string, senderAddress: string, destFolder: string): Promise<BatchResult & { uids: number[] }> {
     return this.withConnection(async (client) => {
+      const mailboxes = await client.list();
+      const paths = new Set(mailboxes.map((m) => m.path));
+      assertFolderExists(paths, folder);
+      assertFolderExists(paths, destFolder);
+
       const lock = await client.getMailboxLock(folder);
+      let uids: number[];
       try {
         const searchResult = await client.search({ from: senderAddress }, { uid: true });
-        const uids: number[] = searchResult === false ? [] : searchResult;
-        if (uids.length === 0) return { moved: 0, uids: [] };
-        const range = uids.join(',');
-        await client.messageMove(range, destFolder, { uid: true });
-        return { moved: uids.length, uids };
+        uids = searchResult === false ? [] : searchResult;
       } finally {
         lock.release();
       }
+      if (uids.length === 0) {
+        return { success: true, requested: 0, moved: 0, destination: destFolder, sourceFolder: folder, uids: [] };
+      }
+
+      const beforeStatus = await client.status(folder, { messages: true });
+      const before = beforeStatus.messages ?? 0;
+
+      const moveLock = await client.getMailboxLock(folder);
+      try {
+        await client.messageMove(uids.join(','), destFolder, { uid: true });
+      } finally {
+        moveLock.release();
+      }
+
+      const afterStatus = await client.status(folder, { messages: true });
+      const after = afterStatus.messages ?? 0;
+      const moved = before - after;
+
+      return {
+        success: moved === uids.length,
+        requested: uids.length,
+        moved,
+        destination: destFolder,
+        sourceFolder: folder,
+        uids,
+      };
     });
   }
 
-  async moveBySearch(folder: string, criteria: Record<string, unknown>, destFolder: string): Promise<{ moved: number; uids: number[] }> {
+  async moveBySearch(folder: string, criteria: Record<string, unknown>, destFolder: string): Promise<BatchResult & { uids: number[] }> {
+    return this.withConnection(async (client) => {
+      const mailboxes = await client.list();
+      const paths = new Set(mailboxes.map((m) => m.path));
+      assertFolderExists(paths, folder);
+      assertFolderExists(paths, destFolder);
+
+      const lock = await client.getMailboxLock(folder);
+      let uids: number[];
+      try {
+        const searchResult = await client.search(criteria, { uid: true });
+        uids = searchResult === false ? [] : searchResult;
+      } finally {
+        lock.release();
+      }
+      if (uids.length === 0) {
+        return { success: true, requested: 0, moved: 0, destination: destFolder, sourceFolder: folder, uids: [] };
+      }
+
+      const beforeStatus = await client.status(folder, { messages: true });
+      const before = beforeStatus.messages ?? 0;
+
+      const moveLock = await client.getMailboxLock(folder);
+      try {
+        await client.messageMove(uids.join(','), destFolder, { uid: true });
+      } finally {
+        moveLock.release();
+      }
+
+      const afterStatus = await client.status(folder, { messages: true });
+      const after = afterStatus.messages ?? 0;
+      const moved = before - after;
+
+      return {
+        success: moved === uids.length,
+        requested: uids.length,
+        moved,
+        destination: destFolder,
+        sourceFolder: folder,
+        uids,
+      };
+    });
+  }
+
+  async searchUidsBySender(folder: string, senderAddress: string): Promise<number[]> {
     return this.withConnection(async (client) => {
       const lock = await client.getMailboxLock(folder);
       try {
-        const searchResult = await client.search(criteria, { uid: true });
-        const uids: number[] = searchResult === false ? [] : searchResult;
-        if (uids.length === 0) return { moved: 0, uids: [] };
-        const range = uids.join(',');
-        await client.messageMove(range, destFolder, { uid: true });
-        return { moved: uids.length, uids };
+        const result = await client.search({ from: senderAddress }, { uid: true });
+        return result === false ? [] : result;
       } finally {
         lock.release();
       }
@@ -699,6 +892,171 @@ export class ImapClientManager {
       } finally {
         lock.release();
       }
+    });
+  }
+
+  async getChangesSince(
+    since: Date,
+    folders: string[],
+  ): Promise<ChangesSinceResult> {
+    return this.withConnection(async (client) => {
+      const mailboxes = await client.list();
+      const known = new Set(mailboxes.map((m) => m.path));
+      const byFolder: Record<string, { newMessages: MessageSummary[]; count: number }> = {};
+      let totalNew = 0;
+
+      for (const folder of folders) {
+        if (!known.has(folder)) {
+          byFolder[folder] = { newMessages: [], count: 0 };
+          continue;
+        }
+        const lock = await client.getMailboxLock(folder);
+        try {
+          // IMAP SINCE has day granularity — fetch then filter to exact timestamp
+          const sinceDate = new Date(since);
+          sinceDate.setHours(0, 0, 0, 0);
+          const searchResult = await client.search({ since: sinceDate }, { uid: true });
+          const uids: number[] = searchResult === false ? [] : searchResult;
+          if (uids.length === 0) {
+            byFolder[folder] = { newMessages: [], count: 0 };
+            continue;
+          }
+          const range = uids.join(',');
+          const messages: MessageSummary[] = [];
+          for await (const msg of client.fetch(range, {
+            envelope: true,
+            flags: true,
+            bodyStructure: true,
+            internalDate: true,
+          }, { uid: true })) {
+            const internal = (msg as any).internalDate as Date | undefined;
+            if (internal && internal.getTime() < since.getTime()) continue;
+            messages.push(this.parseMessageSummary(msg));
+          }
+          messages.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+          byFolder[folder] = { newMessages: messages, count: messages.length };
+          totalNew += messages.length;
+        } finally {
+          lock.release();
+        }
+      }
+
+      return { since: since.toISOString(), byFolder, totalNew };
+    });
+  }
+
+  async routeMessages(
+    sourceFolder: string,
+    uids: number[],
+    labels: string[],
+    destinationFolder: string | undefined,
+  ): Promise<RouteResult> {
+    if (uids.length === 0) {
+      return { success: true, requested: 0, labeled: [] };
+    }
+    return this.withConnection(async (client) => {
+      const mailboxes = await client.list();
+      const paths = new Set(mailboxes.map((m) => m.path));
+      assertFolderExists(paths, sourceFolder);
+      for (const lbl of labels) {
+        assertFolderExists(paths, lbl);
+      }
+      if (destinationFolder) {
+        assertFolderExists(paths, destinationFolder);
+      }
+
+      const range = uids.join(',');
+      const labeled: Array<{ folder: string; copied: number; success: boolean }> = [];
+
+      // Apply labels first (COPY — UIDs stay valid)
+      for (const lbl of labels) {
+        const before = (await client.status(lbl, { messages: true })).messages ?? 0;
+        const lock = await client.getMailboxLock(sourceFolder);
+        try {
+          await client.messageCopy(range, lbl, { uid: true });
+        } finally {
+          lock.release();
+        }
+        const after = (await client.status(lbl, { messages: true })).messages ?? 0;
+        const copied = after - before;
+        labeled.push({ folder: lbl, copied, success: copied === uids.length });
+      }
+
+      // Move last (MOVE invalidates source UIDs)
+      let movedResult: { destination: string; moved: number; success: boolean } | undefined;
+      let failedUids: number[] | undefined;
+      if (destinationFolder) {
+        const before = (await client.status(sourceFolder, { messages: true })).messages ?? 0;
+        const lock = await client.getMailboxLock(sourceFolder);
+        try {
+          await client.messageMove(range, destinationFolder, { uid: true });
+        } finally {
+          lock.release();
+        }
+        const after = (await client.status(sourceFolder, { messages: true })).messages ?? 0;
+        const moved = before - after;
+        movedResult = { destination: destinationFolder, moved, success: moved === uids.length };
+
+        if (moved < uids.length) {
+          const checkLock = await client.getMailboxLock(sourceFolder);
+          try {
+            const result = await client.search({ uid: range }, { uid: true });
+            failedUids = result === false ? [] : result;
+          } finally {
+            checkLock.release();
+          }
+        }
+      }
+
+      const allLabeledOk = labeled.every((l) => l.success);
+      const moveOk = movedResult ? movedResult.success : true;
+      return {
+        success: allLabeledOk && moveOk,
+        requested: uids.length,
+        labeled,
+        ...(movedResult && { moved: movedResult }),
+        ...(failedUids && { failedUids }),
+      };
+    });
+  }
+
+  async getSenderDistribution(
+    excludeFolders: Set<string>,
+  ): Promise<Map<string, { name: string; total: number; byFolder: Record<string, number> }>> {
+    return this.withConnection(async (client) => {
+      const mailboxes = await client.list();
+      const senders = new Map<string, { name: string; total: number; byFolder: Record<string, number> }>();
+
+      for (const mb of mailboxes) {
+        if (excludeFolders.has(mb.path)) continue;
+        if (mb.flags && (mb.flags as Set<string>).has('\\Noselect')) continue;
+        let lock;
+        try {
+          lock = await client.getMailboxLock(mb.path);
+        } catch {
+          continue;
+        }
+        try {
+          const result = await client.search({ all: true }, { uid: true });
+          const uids: number[] = result === false ? [] : result;
+          if (uids.length === 0) continue;
+          const range = uids.join(',');
+          for await (const msg of client.fetch(range, { envelope: true }, { uid: true })) {
+            const from = msg.envelope?.from?.[0];
+            if (!from || !from.address) continue;
+            const address = from.address.toLowerCase();
+            const name = from.name || address;
+            const entry = senders.get(address) || { name, total: 0, byFolder: {} };
+            entry.total++;
+            entry.byFolder[mb.path] = (entry.byFolder[mb.path] || 0) + 1;
+            if (!senders.has(address)) senders.set(address, entry);
+          }
+        } finally {
+          lock.release();
+        }
+      }
+
+      return senders;
     });
   }
 

@@ -21,7 +21,10 @@ import { getMessagesHandler, readMessageHandler, searchMessagesHandler, getSende
 import { moveMessageHandler, applyLabelHandler, removeLabelHandler, deleteMessageHandler, batchMoveHandler, batchApplyLabelHandler, batchRemoveLabelHandler, batchDeleteHandler, crossFolderBatchMoveHandler, moveBySenderHandler, moveBySearchHandler } from './tools/organize.js';
 import { markReadHandler, markUnreadHandler, starMessageHandler, unstarMessageHandler, batchMarkReadHandler, batchMarkUnreadHandler, batchStarHandler, batchUnstarHandler, markAllReadHandler } from './tools/flags.js';
 import { sendEmailHandler, replyMessageHandler, forwardMessageHandler } from './tools/send.js';
-import { getAttachmentHandler } from './tools/attachments.js';
+import { getAttachmentHandler, getAttachmentTextHandler } from './tools/attachments.js';
+import { getChangesSinceHandler } from './tools/changes.js';
+import { routeHandler, batchRouteHandler } from './tools/route.js';
+import { suggestSenderRoutesHandler } from './tools/intelligence.js';
 
 const config = loadConfig();
 const imap = new ImapClientManager(config);
@@ -101,6 +104,18 @@ server.registerTool('get_inbox_digest', {
   return getInboxDigestHandler(imap, { folder, topSendersLimit });
 });
 
+server.registerTool('get_changes_since', {
+  title: 'Changes Since Timestamp',
+  description: 'Stateless diff: returns new messages received since the given ISO 8601 timestamp across the specified folders. Default folder is INBOX. Catches new arrivals only (flag changes are not surfaced).',
+  inputSchema: z.object({
+    since: z.string().describe('ISO 8601 timestamp, e.g. "2026-05-07T00:00:00Z"'),
+    folders: z.array(z.string()).max(20).optional().describe('Folders to check (default: ["INBOX"])'),
+  }),
+}, async ({ since, folders }) => {
+  await imap.connect();
+  return getChangesSinceHandler(imap, { since, folders });
+});
+
 server.registerTool('get_unread_count', {
   title: 'Unread Count',
   description: 'Lightweight check: returns just the unread message count for a folder. Faster than get_folder_stats when you only need one number.',
@@ -110,6 +125,19 @@ server.registerTool('get_unread_count', {
 }, async ({ folder }) => {
   await imap.connect();
   return getUnreadCountHandler(imap, { folder });
+});
+
+server.registerTool('suggest_sender_routes', {
+  title: 'Suggest Sender Routes',
+  description: 'Analyze where each sender\'s mail has historically lived (across all folders) and suggest routing rules for senders whose mail consistently belongs in a non-INBOX folder. Stateless — re-derives from current IMAP state each call. Returns suggestions, does not auto-route.',
+  inputSchema: z.object({
+    minConfidence: z.number().min(0.5).max(1).default(0.8).describe('Minimum dominant-folder ratio (default 0.8)'),
+    minVolume: z.number().min(1).default(3).describe('Minimum total messages from sender (default 3)'),
+    excludeFolders: z.array(z.string()).optional().describe('Folders to skip during analysis (default: Trash, Spam, Drafts, Sent, Archive, All Mail)'),
+  }),
+}, async ({ minConfidence, minVolume, excludeFolders }) => {
+  await imap.connect();
+  return suggestSenderRoutesHandler(imap, { minConfidence, minVolume, excludeFolders });
 });
 
 // --- Message tools ---
@@ -215,7 +243,7 @@ server.registerTool('get_labels_for_message', {
 
 server.registerTool('move_message', {
   title: 'Move Message',
-  description: 'Move a message to a different folder',
+  description: 'Move a message to a different folder For combined move+label, prefer route/batch_route.',
   inputSchema: z.object({
     sourceFolder: z.string().describe('Current folder of the message'),
     uid: z.number().describe('Message UID'),
@@ -228,7 +256,7 @@ server.registerTool('move_message', {
 
 server.registerTool('apply_label', {
   title: 'Apply Label',
-  description: 'Apply a label to a message (copies to label folder, keeps original)',
+  description: 'Apply a label to a message (copies to label folder, keeps original) For combined move+label, prefer route/batch_route.',
   inputSchema: z.object({
     sourceFolder: z.string().describe('Current folder of the message'),
     uid: z.number().describe('Message UID'),
@@ -267,85 +295,91 @@ server.registerTool('delete_message', {
 
 server.registerTool('batch_move_messages', {
   title: 'Batch Move Messages',
-  description: 'Move multiple messages to a folder in a single operation. Accepts an array of UIDs.',
+  description: 'Move multiple messages to a folder in a single operation. Pre-validates folders exist and post-verifies the move count. Returns {success, requested, moved, failedUids?}. Use dryRun:true to preview. For combined move+label, prefer route/batch_route.',
   inputSchema: z.object({
     sourceFolder: z.string().describe('Current folder of the messages'),
     uids: z.array(z.number()).min(1).max(500).describe('Array of message UIDs to move (max 500)'),
     destinationFolder: z.string().describe('Target folder'),
+    dryRun: z.boolean().default(false).describe('If true, preview without mutating. Returns the UIDs that would be moved.'),
   }),
-}, async ({ sourceFolder, uids, destinationFolder }) => {
+}, async ({ sourceFolder, uids, destinationFolder, dryRun }) => {
   await imap.connect();
-  return batchMoveHandler(imap, { sourceFolder, uids, destinationFolder });
+  return batchMoveHandler(imap, { sourceFolder, uids, destinationFolder, dryRun });
 });
 
 server.registerTool('batch_apply_label', {
   title: 'Batch Apply Label',
-  description: 'Apply a label to multiple messages in a single operation',
+  description: 'Apply a label to multiple messages. Pre-validates folders, post-verifies copy count. Returns {success, requested, copied}. Use dryRun:true to preview. For combined move+label, prefer route/batch_route.',
   inputSchema: z.object({
     sourceFolder: z.string().describe('Current folder of the messages'),
     uids: z.array(z.number()).min(1).max(500).describe('Array of message UIDs to label (max 500)'),
     labelFolder: z.string().describe('Label folder to apply'),
+    dryRun: z.boolean().default(false).describe('If true, preview without mutating.'),
   }),
-}, async ({ sourceFolder, uids, labelFolder }) => {
+}, async ({ sourceFolder, uids, labelFolder, dryRun }) => {
   await imap.connect();
-  return batchApplyLabelHandler(imap, { sourceFolder, uids, labelFolder });
+  return batchApplyLabelHandler(imap, { sourceFolder, uids, labelFolder, dryRun });
 });
 
 server.registerTool('batch_remove_label', {
   title: 'Batch Remove Label',
-  description: 'Remove a label from multiple messages at once',
+  description: 'Remove a label from multiple messages. Moves them back to INBOX. Returns {success, requested, moved}. Use dryRun:true to preview. For combined move+label, prefer route/batch_route.',
   inputSchema: z.object({
     labelFolder: z.string().describe('Label folder to remove messages from'),
     uids: z.array(z.number()).min(1).max(500).describe('Array of message UIDs within the label folder (max 500)'),
+    dryRun: z.boolean().default(false).describe('If true, preview without mutating.'),
   }),
-}, async ({ labelFolder, uids }) => {
+}, async ({ labelFolder, uids, dryRun }) => {
   await imap.connect();
-  return batchRemoveLabelHandler(imap, { labelFolder, uids });
+  return batchRemoveLabelHandler(imap, { labelFolder, uids, dryRun });
 });
 
 server.registerTool('batch_delete_messages', {
   title: 'Batch Delete Messages',
-  description: 'Move multiple messages to Trash in a single operation',
+  description: 'Move multiple messages to Trash. Pre-validates Trash exists, post-verifies count. Use dryRun:true to preview.',
   inputSchema: z.object({
     folder: z.string().describe('Current folder of the messages'),
     uids: z.array(z.number()).min(1).max(500).describe('Array of message UIDs to delete (max 500)'),
+    dryRun: z.boolean().default(false).describe('If true, preview without mutating.'),
   }),
-}, async ({ folder, uids }) => {
+}, async ({ folder, uids, dryRun }) => {
   await imap.connect();
-  return batchDeleteHandler(imap, { folder, uids });
+  return batchDeleteHandler(imap, { folder, uids, dryRun });
 });
 
 server.registerTool('cross_folder_batch_move', {
   title: 'Cross-Folder Batch Move',
-  description: 'Move messages from multiple source folders to one destination in a single call. Each item specifies its own sourceFolder.',
+  description: 'Move messages from multiple source folders to one destination. Each item specifies its own sourceFolder. Use dryRun:true to preview.',
   inputSchema: z.object({
     items: z.array(z.object({
       uid: z.number().describe('Message UID'),
       sourceFolder: z.string().describe('Folder this message is currently in'),
     })).min(1).max(500).describe('Array of messages with their source folders (max 500)'),
     destinationFolder: z.string().describe('Target folder for all messages'),
+    dryRun: z.boolean().default(false).describe('If true, preview without mutating.'),
   }),
-}, async ({ items, destinationFolder }) => {
+}, async ({ items, destinationFolder, dryRun }) => {
   await imap.connect();
-  return crossFolderBatchMoveHandler(imap, { items, destinationFolder });
+  return crossFolderBatchMoveHandler(imap, { items, destinationFolder, dryRun });
 });
 
 server.registerTool('move_by_sender', {
   title: 'Move by Sender',
-  description: 'Move all messages from a specific sender to a destination folder. Search + move in one call.',
+  description: 'Move all messages from a specific sender to a destination folder. Use dryRun:true to preview the UIDs that would be moved.',
   inputSchema: z.object({
     sourceFolder: z.string().describe('Folder to search in'),
     senderAddress: z.string().describe('Sender email address to match'),
     destinationFolder: z.string().describe('Target folder'),
+    dryRun: z.boolean().default(false).describe('If true, preview without mutating.'),
   }),
-}, async ({ sourceFolder, senderAddress, destinationFolder }) => {
+}, async ({ sourceFolder, senderAddress, destinationFolder, dryRun }) => {
   await imap.connect();
-  return moveBySenderHandler(imap, { sourceFolder, senderAddress, destinationFolder });
+  return moveBySenderHandler(imap, { sourceFolder, senderAddress, destinationFolder, dryRun });
 });
 
 server.registerTool('move_by_search', {
   title: 'Move by Search',
-  description: 'Search for messages matching criteria and move all matches to a destination folder. Search + move in one call. Requires at least one search criterion.',
+  description: 'Search for messages matching criteria and move all matches to a destination folder. Requires at least one search criterion. Use dryRun:true to preview the UIDs that would be moved.',
   inputSchema: z.object({
     sourceFolder: z.string().describe('Folder to search in'),
     destinationFolder: z.string().describe('Target folder for matched messages'),
@@ -356,10 +390,40 @@ server.registerTool('move_by_search', {
     since: z.string().optional().describe('Messages since date (ISO 8601)'),
     before: z.string().optional().describe('Messages before date (ISO 8601)'),
     unreadOnly: z.boolean().default(false).describe('Only match unread messages'),
+    dryRun: z.boolean().default(false).describe('If true, preview without mutating.'),
   }),
 }, async (params) => {
   await imap.connect();
   return moveBySearchHandler(imap, params);
+});
+
+server.registerTool('route', {
+  title: 'Route Message',
+  description: 'Atomic label-and-move: copy to each label folder (UIDs stay valid), then optionally move to a destination. Use this instead of separate apply_label + move_message calls to avoid UID invalidation between steps.',
+  inputSchema: z.object({
+    sourceFolder: z.string().describe('Current folder of the message'),
+    uid: z.number().describe('Message UID'),
+    labels: z.array(z.string()).optional().describe('Label folder paths to copy the message to (preserves source UID)'),
+    destinationFolder: z.string().optional().describe('Destination folder for the move (omit for label-only)'),
+  }),
+}, async ({ sourceFolder, uid, labels, destinationFolder }) => {
+  await imap.connect();
+  return routeHandler(imap, { sourceFolder, uid, labels, destinationFolder });
+});
+
+server.registerTool('batch_route', {
+  title: 'Batch Route Messages',
+  description: 'Atomic label-and-move for up to 500 messages. Labels copy first (preserving UIDs), then move. Use dryRun:true to preview.',
+  inputSchema: z.object({
+    sourceFolder: z.string().describe('Current folder of the messages'),
+    uids: z.array(z.number()).min(1).max(500).describe('Array of message UIDs (max 500)'),
+    labels: z.array(z.string()).optional().describe('Label folder paths to copy the messages to'),
+    destinationFolder: z.string().optional().describe('Destination folder for the move (omit for label-only)'),
+    dryRun: z.boolean().default(false).describe('If true, preview without mutating.'),
+  }),
+}, async ({ sourceFolder, uids, labels, destinationFolder, dryRun }) => {
+  await imap.connect();
+  return batchRouteHandler(imap, { sourceFolder, uids, labels, destinationFolder, dryRun });
 });
 
 // --- Flag tools ---
@@ -541,6 +605,20 @@ server.registerTool('get_attachment', {
 }, async ({ folder, uid, attachmentPartId }) => {
   await imap.connect();
   return getAttachmentHandler(imap, { folder, uid, attachmentPartId });
+});
+
+server.registerTool('get_attachment_text', {
+  title: 'Get Attachment Text',
+  description: 'Extract plain text from an attachment. Supports application/pdf (via pdf-parse) and text/* MIME types. Returns truncated text up to maxChars.',
+  inputSchema: z.object({
+    folder: z.string().describe('Folder containing the message'),
+    uid: z.number().describe('Message UID'),
+    attachmentPartId: z.string().describe('Attachment part ID from the message'),
+    maxChars: z.number().min(100).max(200000).default(20000).describe('Max characters to return (default 20000)'),
+  }),
+}, async ({ folder, uid, attachmentPartId, maxChars }) => {
+  await imap.connect();
+  return getAttachmentTextHandler(imap, { folder, uid, attachmentPartId, maxChars });
 });
 
 // --- Start server ---

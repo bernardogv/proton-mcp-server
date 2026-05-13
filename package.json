@@ -22,6 +22,7 @@
     "imapflow": "^1.2.16",
     "mailparser": "^3.9.4",
     "nodemailer": "^8.0.3",
+    "pdf-parse": "^2.4.5",
     "zod": "^4.3.6"
   },
   "devDependencies": {

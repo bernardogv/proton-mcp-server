@@ -1,0 +1,9 @@
+From: Sender <sender@example.com>
+To: user@proton.me
+Subject: Plain hello
+Date: Mon, 12 May 2026 11:00:00 +0000
+Content-Type: text/plain; charset=UTF-8
+List-Unsubscribe: <mailto:goodbye@example.com>
+MIME-Version: 1.0
+
+Just a plain text message. No HTML, no encoding tricks.
