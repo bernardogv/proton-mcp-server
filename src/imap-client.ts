@@ -1,5 +1,5 @@
 import { ImapFlow } from 'imapflow';
-import type { BridgeConfig, FolderInfo, FolderStats, MessageSummary, MessageFull, AttachmentMeta, AttachmentSummary, SenderSummary, BatchResult, SnippetMessage } from './utils/types.js';
+import type { BridgeConfig, FolderInfo, FolderStats, MessageSummary, MessageFull, AttachmentMeta, AttachmentSummary, SenderSummary, BatchResult, SnippetMessage, SenderSummaryWithClusters } from './utils/types.js';
 import { assertFolderExists } from './utils/folder-validation.js';
 
 export class ImapClientManager {
@@ -490,8 +490,9 @@ export class ImapClientManager {
     folderStats: FolderStats[];
     inboxTotal: number;
     inboxUnread: number;
-    topSenders: SenderSummary[];
+    topSenders: SenderSummaryWithClusters[];
   }> {
+    const { clusterSubjects } = await import('./utils/clustering.js');
     return this.withConnection(async (client) => {
       const mailboxes = await client.list();
       const folderStats: FolderStats[] = [];
@@ -513,7 +514,7 @@ export class ImapClientManager {
         }
       }
 
-      let topSenders: SenderSummary[] = [];
+      let topSenders: SenderSummaryWithClusters[] = [];
       if (inboxTotal > 0) {
         const lock = await client.getMailboxLock(inboxFolder);
         try {
@@ -521,26 +522,52 @@ export class ImapClientManager {
           const uids: number[] = searchResult === false ? [] : searchResult;
           if (uids.length > 0) {
             const range = uids.join(',');
-            const senderMap = new Map<string, { name: string; count: number; latestDate: string; uids: number[] }>();
+            const senderMap = new Map<string, {
+              name: string;
+              count: number;
+              latestDate: string;
+              uids: number[];
+              subjects: Array<{ uid: number; subject: string }>;
+            }>();
             for await (const msg of client.fetch(range, { envelope: true }, { uid: true })) {
               const from = msg.envelope?.from?.[0];
               if (!from) continue;
               const address = (from.address || '').toLowerCase();
               const name = from.name || address;
               const date = msg.envelope?.date?.toISOString() || '';
+              const subject = msg.envelope?.subject || '';
               const existing = senderMap.get(address);
               if (existing) {
                 existing.count++;
                 existing.uids.push(msg.uid);
+                existing.subjects.push({ uid: msg.uid, subject });
                 if (date > existing.latestDate) existing.latestDate = date;
               } else {
-                senderMap.set(address, { name, count: 1, latestDate: date, uids: [msg.uid] });
+                senderMap.set(address, {
+                  name,
+                  count: 1,
+                  latestDate: date,
+                  uids: [msg.uid],
+                  subjects: [{ uid: msg.uid, subject }],
+                });
               }
             }
             const sorted = [...senderMap.entries()]
-              .map(([address, data]) => ({ sender: data.name, address, count: data.count, latestDate: data.latestDate, uids: data.uids }))
-              .sort((a, b) => b.count - a.count);
-            topSenders = sorted.slice(0, topSendersLimit);
+              .map(([address, data]) => ({
+                sender: data.name,
+                address,
+                count: data.count,
+                latestDate: data.latestDate,
+                uids: data.uids,
+                subjects: data.subjects,
+              }))
+              .sort((a, b) => b.count - a.count)
+              .slice(0, topSendersLimit);
+            topSenders = sorted.map((s) => {
+              const clusters = clusterSubjects(s.subjects);
+              const { subjects: _drop, ...rest } = s;
+              return clusters.length > 0 ? { ...rest, topClusters: clusters } : rest;
+            });
           }
         } finally {
           lock.release();
