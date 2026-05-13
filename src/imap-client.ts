@@ -1,5 +1,5 @@
 import { ImapFlow } from 'imapflow';
-import type { BridgeConfig, FolderInfo, FolderStats, MessageSummary, MessageFull, AttachmentMeta, AttachmentSummary, SenderSummary, BatchResult, SnippetMessage, SenderSummaryWithClusters } from './utils/types.js';
+import type { BridgeConfig, FolderInfo, FolderStats, MessageSummary, MessageFull, AttachmentMeta, AttachmentSummary, SenderSummary, BatchResult, SnippetMessage, SenderSummaryWithClusters, ChangesSinceResult } from './utils/types.js';
 import { assertFolderExists } from './utils/folder-validation.js';
 
 export class ImapClientManager {
@@ -880,6 +880,56 @@ export class ImapClientManager {
       } finally {
         lock.release();
       }
+    });
+  }
+
+  async getChangesSince(
+    since: Date,
+    folders: string[],
+  ): Promise<ChangesSinceResult> {
+    return this.withConnection(async (client) => {
+      const mailboxes = await client.list();
+      const known = new Set(mailboxes.map((m) => m.path));
+      const byFolder: Record<string, { newMessages: MessageSummary[]; count: number }> = {};
+      let totalNew = 0;
+
+      for (const folder of folders) {
+        if (!known.has(folder)) {
+          byFolder[folder] = { newMessages: [], count: 0 };
+          continue;
+        }
+        const lock = await client.getMailboxLock(folder);
+        try {
+          // IMAP SINCE has day granularity — fetch then filter to exact timestamp
+          const sinceDate = new Date(since);
+          sinceDate.setHours(0, 0, 0, 0);
+          const searchResult = await client.search({ since: sinceDate }, { uid: true });
+          const uids: number[] = searchResult === false ? [] : searchResult;
+          if (uids.length === 0) {
+            byFolder[folder] = { newMessages: [], count: 0 };
+            continue;
+          }
+          const range = uids.join(',');
+          const messages: MessageSummary[] = [];
+          for await (const msg of client.fetch(range, {
+            envelope: true,
+            flags: true,
+            bodyStructure: true,
+            internalDate: true,
+          }, { uid: true })) {
+            const internal = (msg as any).internalDate as Date | undefined;
+            if (internal && internal.getTime() < since.getTime()) continue;
+            messages.push(this.parseMessageSummary(msg));
+          }
+          messages.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+          byFolder[folder] = { newMessages: messages, count: messages.length };
+          totalNew += messages.length;
+        } finally {
+          lock.release();
+        }
+      }
+
+      return { since: since.toISOString(), byFolder, totalNew };
     });
   }
 

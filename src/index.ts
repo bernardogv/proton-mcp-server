@@ -22,6 +22,7 @@ import { moveMessageHandler, applyLabelHandler, removeLabelHandler, deleteMessag
 import { markReadHandler, markUnreadHandler, starMessageHandler, unstarMessageHandler, batchMarkReadHandler, batchMarkUnreadHandler, batchStarHandler, batchUnstarHandler, markAllReadHandler } from './tools/flags.js';
 import { sendEmailHandler, replyMessageHandler, forwardMessageHandler } from './tools/send.js';
 import { getAttachmentHandler } from './tools/attachments.js';
+import { getChangesSinceHandler } from './tools/changes.js';
 
 const config = loadConfig();
 const imap = new ImapClientManager(config);
@@ -99,6 +100,18 @@ server.registerTool('get_inbox_digest', {
 }, async ({ folder, topSendersLimit }) => {
   await imap.connect();
   return getInboxDigestHandler(imap, { folder, topSendersLimit });
+});
+
+server.registerTool('get_changes_since', {
+  title: 'Changes Since Timestamp',
+  description: 'Stateless diff: returns new messages received since the given ISO 8601 timestamp across the specified folders. Default folder is INBOX. Catches new arrivals only (flag changes are not surfaced).',
+  inputSchema: z.object({
+    since: z.string().describe('ISO 8601 timestamp, e.g. "2026-05-07T00:00:00Z"'),
+    folders: z.array(z.string()).max(20).optional().describe('Folders to check (default: ["INBOX"])'),
+  }),
+}, async ({ since, folders }) => {
+  await imap.connect();
+  return getChangesSinceHandler(imap, { since, folders });
 });
 
 server.registerTool('get_unread_count', {
