@@ -46,6 +46,7 @@ export async function batchMoveHandler(
   params: { sourceFolder: string; uids: number[]; destinationFolder: string; dryRun?: boolean }
 ): Promise<ToolResult> {
   if (params.dryRun) {
+    await imap.assertFoldersExist([params.sourceFolder, params.destinationFolder]);
     return {
       content: [{ type: 'text', text: JSON.stringify({
         dryRun: true,
@@ -67,6 +68,7 @@ export async function batchApplyLabelHandler(
   params: { sourceFolder: string; uids: number[]; labelFolder: string; dryRun?: boolean }
 ): Promise<ToolResult> {
   if (params.dryRun) {
+    await imap.assertFoldersExist([params.sourceFolder, params.labelFolder]);
     return {
       content: [{ type: 'text', text: JSON.stringify({
         dryRun: true,
@@ -88,6 +90,7 @@ export async function batchDeleteHandler(
   params: { folder: string; uids: number[]; dryRun?: boolean }
 ): Promise<ToolResult> {
   if (params.dryRun) {
+    await imap.assertFoldersExist([params.folder, 'Trash']);
     return {
       content: [{ type: 'text', text: JSON.stringify({
         dryRun: true,
@@ -109,6 +112,8 @@ export async function crossFolderBatchMoveHandler(
   params: { items: Array<{ uid: number; sourceFolder: string }>; destinationFolder: string; dryRun?: boolean }
 ): Promise<ToolResult> {
   if (params.dryRun) {
+    const sources = Array.from(new Set(params.items.map((i) => i.sourceFolder)));
+    await imap.assertFoldersExist([...sources, params.destinationFolder]);
     const grouped: Record<string, number[]> = {};
     for (const item of params.items) {
       (grouped[item.sourceFolder] ||= []).push(item.uid);
@@ -133,6 +138,7 @@ export async function moveBySenderHandler(
   params: { sourceFolder: string; senderAddress: string; destinationFolder: string; dryRun?: boolean }
 ): Promise<ToolResult> {
   if (params.dryRun) {
+    await imap.assertFoldersExist([params.sourceFolder, params.destinationFolder]);
     const uids = await imap.searchUidsBySender(params.sourceFolder, params.senderAddress);
     return {
       content: [{ type: 'text', text: JSON.stringify({
@@ -156,6 +162,7 @@ export async function batchRemoveLabelHandler(
   params: { labelFolder: string; uids: number[]; dryRun?: boolean }
 ): Promise<ToolResult> {
   if (params.dryRun) {
+    await imap.assertFoldersExist([params.labelFolder, 'INBOX']);
     return {
       content: [{ type: 'text', text: JSON.stringify({
         dryRun: true,
@@ -203,6 +210,7 @@ export async function moveBySearchHandler(
   }
 
   if (params.dryRun) {
+    await imap.assertFoldersExist([params.sourceFolder, params.destinationFolder]);
     const uids = await imap.searchMessages(params.sourceFolder, criteria);
     return {
       content: [{ type: 'text', text: JSON.stringify({

@@ -45,6 +45,18 @@ export class ImapClientManager {
     }
   }
 
+  /** Assert that all named folder paths exist; throws if any are missing */
+  async assertFoldersExist(paths: string[]): Promise<void> {
+    if (paths.length === 0) return;
+    return this.withConnection(async (client) => {
+      const mailboxes = await client.list();
+      const known = new Set(mailboxes.map((m) => m.path));
+      for (const p of paths) {
+        assertFolderExists(known, p);
+      }
+    });
+  }
+
   // Keep connect/disconnect for backward compat with tests
   async connect(): Promise<void> {}
   async disconnect(): Promise<void> {}

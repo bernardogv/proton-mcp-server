@@ -42,6 +42,9 @@ export async function batchRouteHandler(
     };
   }
   if (params.dryRun) {
+    const toValidate = [params.sourceFolder, ...(params.labels || [])];
+    if (params.destinationFolder) toValidate.push(params.destinationFolder);
+    await imap.assertFoldersExist(toValidate);
     return {
       content: [{ type: 'text', text: JSON.stringify({
         dryRun: true,
