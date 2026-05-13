@@ -80,6 +80,7 @@ Add to your Claude Desktop `claude_desktop_config.json` or Claude Code settings:
 | `get_sender_summary` | Messages grouped by sender with counts and UIDs |
 | `get_inbox_digest` | One-call overview: folder stats + top senders + counts |
 | `get_unread_count` | Quick unread count for a single folder |
+| `get_changes_since` | Stateless: returns new messages since an ISO 8601 timestamp |
 
 ### Organizing Messages
 
@@ -95,6 +96,8 @@ Add to your Claude Desktop `claude_desktop_config.json` or Claude Code settings:
 | `cross_folder_batch_move` | Move messages from multiple source folders to one destination |
 | `move_by_sender` | Move all messages from a specific sender |
 | `move_by_search` | Search + move in one call |
+| `route` / `batch_route` | Atomic label-and-move (avoids UID invalidation between separate calls) |
+| `suggest_sender_routes` | Suggests routing rules based on historical sender→folder distribution |
 
 ### Flags
 
@@ -111,6 +114,11 @@ Add to your Claude Desktop `claude_desktop_config.json` or Claude Code settings:
 |------|-------------|
 | `send_email` | Send email via SMTP (supports HTML, CC/BCC, reply threading) |
 | `get_attachment` | Download an attachment by part ID |
+| `get_attachment_text` | Extract plain text from PDF or text/* attachments |
+
+> **Batch behavior**: All batch organize tools (`batch_move_messages`, `batch_apply_label`, `batch_remove_label`, `batch_delete_messages`, `cross_folder_batch_move`, `move_by_sender`, `move_by_search`, `batch_route`) accept `dryRun: true` to preview UIDs that would be affected without mutating. All move/copy ops pre-validate folder paths and post-verify counts, returning `{success, requested, moved|copied, failedUids?}`.
+>
+> **Clean snippets**: Snippets returned by `get_messages_with_snippets` are cleaned via mailparser (quoted-printable decoded, HTML stripped) and include `hasUnsubscribe`, `unsubscribeMailto`, `unsubscribeHttp`, `unsubscribeOneClick` when the `List-Unsubscribe` header is present.
 
 ## Development
 
