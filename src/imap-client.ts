@@ -1,5 +1,5 @@
 import { ImapFlow } from 'imapflow';
-import type { BridgeConfig, FolderInfo, FolderStats, MessageSummary, MessageFull, AttachmentMeta, AttachmentSummary, SenderSummary, BatchResult } from './utils/types.js';
+import type { BridgeConfig, FolderInfo, FolderStats, MessageSummary, MessageFull, AttachmentMeta, AttachmentSummary, SenderSummary, BatchResult, SnippetMessage } from './utils/types.js';
 import { assertFolderExists } from './utils/folder-validation.js';
 
 export class ImapClientManager {
@@ -551,12 +551,18 @@ export class ImapClientManager {
     });
   }
 
-  async getMessagesWithSnippets(folder: string, limit: number, offset: number, unreadOnly: boolean, snippetLength: number): Promise<{ messages: Array<MessageSummary & { snippet: string }>; total: number }> {
+  async getMessagesWithSnippets(
+    folder: string,
+    limit: number,
+    offset: number,
+    unreadOnly: boolean,
+    snippetLength: number,
+  ): Promise<{ messages: SnippetMessage[]; total: number }> {
     return this.withConnection(async (client) => {
       const lock = await client.getMailboxLock(folder);
       try {
         const mailbox = client.mailbox;
-        if (!mailbox || mailbox.exists === 0) return { messages: [], total: 0 };
+        if (!mailbox || (mailbox as any).exists === 0) return { messages: [], total: 0 };
 
         let uids: number[];
         if (unreadOnly) {
@@ -572,40 +578,44 @@ export class ImapClientManager {
         const sliced = uids.slice(offset, offset + limit);
         if (sliced.length === 0) return { messages: [], total };
 
-        const messages: Array<MessageSummary & { snippet: string }> = [];
+        const messages: SnippetMessage[] = [];
         const range = sliced.join(',');
+
+        const { buildCleanSnippet } = await import('./utils/snippet.js');
 
         for await (const msg of client.fetch(range, {
           envelope: true,
           flags: true,
           bodyStructure: true,
-          bodyParts: ['1', '1.1'],
+          source: true,
         }, { uid: true })) {
           const summary = this.parseMessageSummary(msg);
-          let snippet = '';
-          // Prefer part 1.1 (text/plain in multipart) over part 1 (often HTML)
-          const textPart = msg.bodyParts?.get('1.1') || msg.bodyParts?.get('1');
-          if (textPart) {
-            let text = textPart.toString('utf-8');
-            // Strip HTML tags if present
-            if (text.includes('<') && (text.includes('</') || text.includes('/>'))) {
-              text = text
-                .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-                .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
-                .replace(/<[^>]+>/g, ' ')
-                .replace(/&nbsp;/gi, ' ')
-                .replace(/&amp;/gi, '&')
-                .replace(/&lt;/gi, '<')
-                .replace(/&gt;/gi, '>')
-                .replace(/&quot;/gi, '"')
-                .replace(/&#39;/gi, "'")
-                .replace(/=\r?\n/g, '')       // quoted-printable soft breaks
-                .replace(/=3D/gi, '=')         // quoted-printable equals
-                .replace(/\s+/g, ' ');
+          let snippetData: {
+            snippet: string;
+            hasUnsubscribe: boolean;
+            unsubscribeMailto?: string;
+            unsubscribeHttp?: string;
+            unsubscribeOneClick: boolean;
+          } = {
+            snippet: '',
+            hasUnsubscribe: false,
+            unsubscribeOneClick: false,
+          };
+          if (msg.source) {
+            try {
+              snippetData = await buildCleanSnippet(msg.source as Buffer, snippetLength);
+            } catch {
+              // fall through with empty snippet
             }
-            snippet = text.replace(/[\r\n\t]+/g, ' ').trim().slice(0, snippetLength);
           }
-          messages.push({ ...summary, snippet });
+          messages.push({
+            ...summary,
+            snippet: snippetData.snippet,
+            ...(snippetData.hasUnsubscribe && { hasUnsubscribe: true }),
+            ...(snippetData.unsubscribeMailto && { unsubscribeMailto: snippetData.unsubscribeMailto }),
+            ...(snippetData.unsubscribeHttp && { unsubscribeHttp: snippetData.unsubscribeHttp }),
+            ...(snippetData.unsubscribeOneClick && { unsubscribeOneClick: true }),
+          });
         }
 
         return { messages, total };
