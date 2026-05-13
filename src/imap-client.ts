@@ -167,6 +167,10 @@ export class ImapClientManager {
 
   async moveMessage(sourceFolder: string, uid: number, destFolder: string): Promise<void> {
     return this.withConnection(async (client) => {
+      const mailboxes = await client.list();
+      const paths = new Set(mailboxes.map((m) => m.path));
+      assertFolderExists(paths, sourceFolder);
+      assertFolderExists(paths, destFolder);
       const lock = await client.getMailboxLock(sourceFolder);
       try {
         await client.messageMove(String(uid), destFolder, { uid: true });
@@ -178,6 +182,10 @@ export class ImapClientManager {
 
   async copyMessage(sourceFolder: string, uid: number, destFolder: string): Promise<void> {
     return this.withConnection(async (client) => {
+      const mailboxes = await client.list();
+      const paths = new Set(mailboxes.map((m) => m.path));
+      assertFolderExists(paths, sourceFolder);
+      assertFolderExists(paths, destFolder);
       const lock = await client.getMailboxLock(sourceFolder);
       try {
         await client.messageCopy(String(uid), destFolder, { uid: true });
