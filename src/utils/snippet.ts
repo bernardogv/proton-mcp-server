@@ -39,15 +39,29 @@ export async function buildCleanSnippet(
   const text = (parsed.text || '').replace(/\s+/g, ' ').trim();
   const snippet = text.slice(0, snippetLength);
 
-  const listUnsubHeader = parsed.headers.get('list-unsubscribe');
-  const headerString = typeof listUnsubHeader === 'string'
-    ? listUnsubHeader
-    : listUnsubHeader && typeof listUnsubHeader === 'object' && 'text' in listUnsubHeader
-      ? (listUnsubHeader as { text: string }).text
-      : undefined;
+  // mailparser parses List-Unsubscribe into a structured 'list' header
+  const listHeader = parsed.headers.get('list') as any;
+  const unsubscribeData = listHeader?.unsubscribe;
+  const unsubscribePostData = listHeader?.['unsubscribe-post'];
 
-  const { mailto, http } = parseListUnsubscribe(headerString);
-  const oneClick = parsed.headers.has('list-unsubscribe-post');
+  let mailto: string | undefined;
+  let http: string | undefined;
+  let oneClick = false;
+
+  if (unsubscribeData) {
+    // mailparser structure: { mail: 'email', url: 'https://...' }
+    if (unsubscribeData.mail) {
+      mailto = unsubscribeData.mail;
+    }
+    if (unsubscribeData.url) {
+      http = unsubscribeData.url;
+    }
+  }
+
+  // Check for List-Unsubscribe-Post inside the list header
+  if (unsubscribePostData) {
+    oneClick = true;
+  }
 
   return {
     snippet,

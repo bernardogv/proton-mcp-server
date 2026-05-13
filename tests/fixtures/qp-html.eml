@@ -1,0 +1,21 @@
+From: Newsletter <news@example.com>
+To: user@proton.me
+Subject: Weekly digest
+Date: Mon, 12 May 2026 10:00:00 +0000
+Content-Type: multipart/alternative; boundary="bdy"
+List-Unsubscribe: <mailto:unsub@example.com>, <https://example.com/u/123>
+List-Unsubscribe-Post: List-Unsubscribe=One-Click
+MIME-Version: 1.0
+
+--bdy
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: quoted-printable
+
+Hello =E2=80=94 here is your weekly digest with =CD=8F=C2=A0special chars.
+
+--bdy
+Content-Type: text/html; charset=UTF-8
+
+<html><head><style>@media (max-width:600px){.x{display:none}}</style></head>
+<body><p>Hello &mdash; here is your <b>weekly</b> digest with&zwnj;special chars.</p></body></html>
+--bdy--
