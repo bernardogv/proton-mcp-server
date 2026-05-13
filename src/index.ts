@@ -23,6 +23,7 @@ import { markReadHandler, markUnreadHandler, starMessageHandler, unstarMessageHa
 import { sendEmailHandler, replyMessageHandler, forwardMessageHandler } from './tools/send.js';
 import { getAttachmentHandler } from './tools/attachments.js';
 import { getChangesSinceHandler } from './tools/changes.js';
+import { routeHandler, batchRouteHandler } from './tools/route.js';
 
 const config = loadConfig();
 const imap = new ImapClientManager(config);
@@ -228,7 +229,7 @@ server.registerTool('get_labels_for_message', {
 
 server.registerTool('move_message', {
   title: 'Move Message',
-  description: 'Move a message to a different folder',
+  description: 'Move a message to a different folder For combined move+label, prefer route/batch_route.',
   inputSchema: z.object({
     sourceFolder: z.string().describe('Current folder of the message'),
     uid: z.number().describe('Message UID'),
@@ -241,7 +242,7 @@ server.registerTool('move_message', {
 
 server.registerTool('apply_label', {
   title: 'Apply Label',
-  description: 'Apply a label to a message (copies to label folder, keeps original)',
+  description: 'Apply a label to a message (copies to label folder, keeps original) For combined move+label, prefer route/batch_route.',
   inputSchema: z.object({
     sourceFolder: z.string().describe('Current folder of the message'),
     uid: z.number().describe('Message UID'),
@@ -280,7 +281,7 @@ server.registerTool('delete_message', {
 
 server.registerTool('batch_move_messages', {
   title: 'Batch Move Messages',
-  description: 'Move multiple messages to a folder in a single operation. Pre-validates folders exist and post-verifies the move count. Returns {success, requested, moved, failedUids?}. Use dryRun:true to preview.',
+  description: 'Move multiple messages to a folder in a single operation. Pre-validates folders exist and post-verifies the move count. Returns {success, requested, moved, failedUids?}. Use dryRun:true to preview. For combined move+label, prefer route/batch_route.',
   inputSchema: z.object({
     sourceFolder: z.string().describe('Current folder of the messages'),
     uids: z.array(z.number()).min(1).max(500).describe('Array of message UIDs to move (max 500)'),
@@ -294,7 +295,7 @@ server.registerTool('batch_move_messages', {
 
 server.registerTool('batch_apply_label', {
   title: 'Batch Apply Label',
-  description: 'Apply a label to multiple messages. Pre-validates folders, post-verifies copy count. Returns {success, requested, copied}. Use dryRun:true to preview.',
+  description: 'Apply a label to multiple messages. Pre-validates folders, post-verifies copy count. Returns {success, requested, copied}. Use dryRun:true to preview. For combined move+label, prefer route/batch_route.',
   inputSchema: z.object({
     sourceFolder: z.string().describe('Current folder of the messages'),
     uids: z.array(z.number()).min(1).max(500).describe('Array of message UIDs to label (max 500)'),
@@ -308,7 +309,7 @@ server.registerTool('batch_apply_label', {
 
 server.registerTool('batch_remove_label', {
   title: 'Batch Remove Label',
-  description: 'Remove a label from multiple messages. Moves them back to INBOX. Returns {success, requested, moved}. Use dryRun:true to preview.',
+  description: 'Remove a label from multiple messages. Moves them back to INBOX. Returns {success, requested, moved}. Use dryRun:true to preview. For combined move+label, prefer route/batch_route.',
   inputSchema: z.object({
     labelFolder: z.string().describe('Label folder to remove messages from'),
     uids: z.array(z.number()).min(1).max(500).describe('Array of message UIDs within the label folder (max 500)'),
@@ -380,6 +381,35 @@ server.registerTool('move_by_search', {
 }, async (params) => {
   await imap.connect();
   return moveBySearchHandler(imap, params);
+});
+
+server.registerTool('route', {
+  title: 'Route Message',
+  description: 'Atomic label-and-move: copy to each label folder (UIDs stay valid), then optionally move to a destination. Use this instead of separate apply_label + move_message calls to avoid UID invalidation between steps.',
+  inputSchema: z.object({
+    sourceFolder: z.string().describe('Current folder of the message'),
+    uid: z.number().describe('Message UID'),
+    labels: z.array(z.string()).optional().describe('Label folder paths to copy the message to (preserves source UID)'),
+    destinationFolder: z.string().optional().describe('Destination folder for the move (omit for label-only)'),
+  }),
+}, async ({ sourceFolder, uid, labels, destinationFolder }) => {
+  await imap.connect();
+  return routeHandler(imap, { sourceFolder, uid, labels, destinationFolder });
+});
+
+server.registerTool('batch_route', {
+  title: 'Batch Route Messages',
+  description: 'Atomic label-and-move for up to 500 messages. Labels copy first (preserving UIDs), then move. Use dryRun:true to preview.',
+  inputSchema: z.object({
+    sourceFolder: z.string().describe('Current folder of the messages'),
+    uids: z.array(z.number()).min(1).max(500).describe('Array of message UIDs (max 500)'),
+    labels: z.array(z.string()).optional().describe('Label folder paths to copy the messages to'),
+    destinationFolder: z.string().optional().describe('Destination folder for the move (omit for label-only)'),
+    dryRun: z.boolean().default(false).describe('If true, preview without mutating.'),
+  }),
+}, async ({ sourceFolder, uids, labels, destinationFolder, dryRun }) => {
+  await imap.connect();
+  return batchRouteHandler(imap, { sourceFolder, uids, labels, destinationFolder, dryRun });
 });
 
 // --- Flag tools ---

@@ -1,5 +1,5 @@
 import { ImapFlow } from 'imapflow';
-import type { BridgeConfig, FolderInfo, FolderStats, MessageSummary, MessageFull, AttachmentMeta, AttachmentSummary, SenderSummary, BatchResult, SnippetMessage, SenderSummaryWithClusters, ChangesSinceResult } from './utils/types.js';
+import type { BridgeConfig, FolderInfo, FolderStats, MessageSummary, MessageFull, AttachmentMeta, AttachmentSummary, SenderSummary, BatchResult, SnippetMessage, SenderSummaryWithClusters, ChangesSinceResult, RouteResult } from './utils/types.js';
 import { assertFolderExists } from './utils/folder-validation.js';
 
 export class ImapClientManager {
@@ -930,6 +930,81 @@ export class ImapClientManager {
       }
 
       return { since: since.toISOString(), byFolder, totalNew };
+    });
+  }
+
+  async routeMessages(
+    sourceFolder: string,
+    uids: number[],
+    labels: string[],
+    destinationFolder: string | undefined,
+  ): Promise<RouteResult> {
+    if (uids.length === 0) {
+      return { success: true, requested: 0, labeled: [] };
+    }
+    return this.withConnection(async (client) => {
+      const mailboxes = await client.list();
+      const paths = new Set(mailboxes.map((m) => m.path));
+      assertFolderExists(paths, sourceFolder);
+      for (const lbl of labels) {
+        assertFolderExists(paths, lbl);
+      }
+      if (destinationFolder) {
+        assertFolderExists(paths, destinationFolder);
+      }
+
+      const range = uids.join(',');
+      const labeled: Array<{ folder: string; copied: number; success: boolean }> = [];
+
+      // Apply labels first (COPY — UIDs stay valid)
+      for (const lbl of labels) {
+        const before = (await client.status(lbl, { messages: true })).messages ?? 0;
+        const lock = await client.getMailboxLock(sourceFolder);
+        try {
+          await client.messageCopy(range, lbl, { uid: true });
+        } finally {
+          lock.release();
+        }
+        const after = (await client.status(lbl, { messages: true })).messages ?? 0;
+        const copied = after - before;
+        labeled.push({ folder: lbl, copied, success: copied === uids.length });
+      }
+
+      // Move last (MOVE invalidates source UIDs)
+      let movedResult: { destination: string; moved: number; success: boolean } | undefined;
+      let failedUids: number[] | undefined;
+      if (destinationFolder) {
+        const before = (await client.status(sourceFolder, { messages: true })).messages ?? 0;
+        const lock = await client.getMailboxLock(sourceFolder);
+        try {
+          await client.messageMove(range, destinationFolder, { uid: true });
+        } finally {
+          lock.release();
+        }
+        const after = (await client.status(sourceFolder, { messages: true })).messages ?? 0;
+        const moved = before - after;
+        movedResult = { destination: destinationFolder, moved, success: moved === uids.length };
+
+        if (moved < uids.length) {
+          const checkLock = await client.getMailboxLock(sourceFolder);
+          try {
+            const result = await client.search({ uid: range }, { uid: true });
+            failedUids = result === false ? [] : result;
+          } finally {
+            checkLock.release();
+          }
+        }
+      }
+
+      const allLabeledOk = labeled.every((l) => l.success);
+      const moveOk = movedResult ? movedResult.success : true;
+      return {
+        success: allLabeledOk && moveOk,
+        requested: uids.length,
+        labeled,
+        ...(movedResult && { moved: movedResult }),
+        ...(failedUids && { failedUids }),
+      };
     });
   }
 
