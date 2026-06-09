@@ -4,7 +4,10 @@ import { dirname, join } from 'path';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+const _write = process.stdout.write.bind(process.stdout);
+process.stdout.write = () => true;
 dotenv.config({ path: join(__dirname, '..', '.env') });
+process.stdout.write = _write;
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
