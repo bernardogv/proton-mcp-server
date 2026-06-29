@@ -634,6 +634,39 @@ export class ImapClientManager {
     });
   }
 
+  async createDraft(params: {
+    to: string[];
+    cc?: string[];
+    subject: string;
+    body: string;
+    isHtml?: boolean;
+    draftsFolder?: string;
+  }): Promise<{ uid: number }> {
+    return this.withConnection(async (client) => {
+      const folder = params.draftsFolder || 'Drafts';
+      const contentType = params.isHtml ? 'text/html; charset=utf-8' : 'text/plain; charset=utf-8';
+
+      const headers: string[] = [
+        `From: ${this.config.username}`,
+        `To: ${params.to.join(', ')}`,
+      ];
+      if (params.cc && params.cc.length > 0) {
+        headers.push(`Cc: ${params.cc.join(', ')}`);
+      }
+      headers.push(
+        `Subject: ${params.subject}`,
+        `Date: ${new Date().toUTCString()}`,
+        'MIME-Version: 1.0',
+        `Content-Type: ${contentType}; charset=utf-8`,
+      );
+
+      const raw = headers.join('\r\n') + '\r\n\r\n' + params.body;
+      const result = await client.append(folder, Buffer.from(raw, 'utf-8'), ['\\Draft', '\\Seen']);
+      if (result === false) throw new Error('Failed to create draft: server returned no response');
+      return { uid: result.uid ?? 0 };
+    });
+  }
+
   private parseMessageSummary(msg: any): MessageSummary {
     const attachments = extractAttachmentInfo(msg.bodyStructure);
     return {
