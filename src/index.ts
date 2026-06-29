@@ -20,6 +20,7 @@ import { getMessagesHandler, readMessageHandler, searchMessagesHandler, getSende
 import { moveMessageHandler, applyLabelHandler, removeLabelHandler, deleteMessageHandler, batchMoveHandler, batchApplyLabelHandler, batchDeleteHandler, crossFolderBatchMoveHandler, moveBySenderHandler, moveBySearchHandler } from './tools/organize.js';
 import { markReadHandler, markUnreadHandler, starMessageHandler, unstarMessageHandler, batchMarkReadHandler, batchMarkUnreadHandler, markAllReadHandler } from './tools/flags.js';
 import { sendEmailHandler } from './tools/send.js';
+import { createDraftHandler } from './tools/drafts.js';
 import { getAttachmentHandler } from './tools/attachments.js';
 
 const config = loadConfig();
@@ -422,6 +423,24 @@ server.registerTool('mark_all_read', {
 }, async ({ folder }) => {
   await imap.connect();
   return markAllReadHandler(imap, { folder });
+});
+
+// --- Draft tool ---
+
+server.registerTool('create_draft', {
+  title: 'Create Draft',
+  description: 'Save an email as a draft in the Proton Mail Drafts folder without sending it',
+  inputSchema: z.object({
+    to: z.array(z.string().email()).min(1).describe('Recipient email addresses'),
+    cc: z.array(z.string().email()).optional().describe('CC recipients'),
+    subject: z.string().describe('Email subject'),
+    body: z.string().describe('Email body (text or HTML)'),
+    isHtml: z.boolean().default(false).describe('Whether body is HTML'),
+    draftsFolder: z.string().default('Drafts').describe('Drafts folder name (default: Drafts)'),
+  }),
+}, async (params) => {
+  await imap.connect();
+  return createDraftHandler(imap, params);
 });
 
 // --- Send tool ---
