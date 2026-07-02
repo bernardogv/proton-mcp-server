@@ -1,5 +1,6 @@
 import nodemailer from 'nodemailer';
 import type { BridgeConfig } from './utils/types.js';
+import { isLoopbackHost } from './utils/config.js';
 
 interface SendEmailOptions {
   to: string[];
@@ -28,7 +29,8 @@ export class SmtpClient {
         pass: config.password,
       },
       tls: {
-        rejectUnauthorized: false,
+        // Proton Bridge uses a self-signed cert; only skip verification for local Bridge
+        rejectUnauthorized: !isLoopbackHost(config.smtp.host),
       },
     });
   }
