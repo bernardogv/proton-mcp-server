@@ -94,10 +94,11 @@ Add to your Claude Desktop `claude_desktop_config.json` or Claude Code settings:
 | `batch_apply_label` | Label up to 500 messages at once |
 | `batch_delete_messages` | Trash up to 500 messages at once |
 | `cross_folder_batch_move` | Move messages from multiple source folders to one destination |
-| `move_by_sender` | Move all messages from a specific sender |
+| `move_by_sender` | Move all messages from a specific sender (exact envelope-address match) |
+| `batch_move_by_senders` | Move messages from up to 100 senders in one call over a single connection |
 | `move_by_search` | Search + move in one call |
 | `route` / `batch_route` | Atomic label-and-move (avoids UID invalidation between separate calls) |
-| `suggest_sender_routes` | Suggests routing rules based on historical sender→folder distribution |
+| `suggest_sender_routes` | Suggests routing rules based on historical sender→folder distribution (`inboxOnly` filters to actionable senders; `limit` caps output, default 50) |
 
 ### Flags
 
@@ -116,9 +117,11 @@ Add to your Claude Desktop `claude_desktop_config.json` or Claude Code settings:
 | `get_attachment` | Download an attachment by part ID |
 | `get_attachment_text` | Extract plain text from PDF or text/* attachments |
 
-> **Batch behavior**: All batch organize tools (`batch_move_messages`, `batch_apply_label`, `batch_remove_label`, `batch_delete_messages`, `cross_folder_batch_move`, `move_by_sender`, `move_by_search`, `batch_route`) accept `dryRun: true` to preview UIDs that would be affected without mutating. All move/copy ops pre-validate folder paths and post-verify counts, returning `{success, requested, moved|copied, failedUids?}`.
+> **Batch behavior**: All batch organize tools (`batch_move_messages`, `batch_apply_label`, `batch_remove_label`, `batch_delete_messages`, `cross_folder_batch_move`, `move_by_sender`, `batch_move_by_senders`, `move_by_search`, `batch_route`) accept `dryRun: true` to preview UIDs that would be affected without mutating. All move/copy ops pre-validate folder paths and post-verify counts, returning `{success, requested, moved|copied, failedUids?}`.
 >
-> **Clean snippets**: Snippets returned by `get_messages_with_snippets` are cleaned via mailparser (quoted-printable decoded, HTML stripped) and include `hasUnsubscribe`, `unsubscribeMailto`, `unsubscribeHttp`, `unsubscribeOneClick` when the `List-Unsubscribe` header is present.
+> **Exact sender matching**: `move_by_sender` and `batch_move_by_senders` post-filter IMAP's substring `FROM` search against the exact envelope address, so `hit-reply@x.com` never grabs `inmail-hit-reply@x.com` mail.
+>
+> **Clean snippets**: Snippets returned by `get_messages_with_snippets` are cleaned via mailparser (quoted-printable decoded, HTML stripped) and include `hasUnsubscribe` / `unsubscribeOneClick` flags when the `List-Unsubscribe` header is present. Full `unsubscribeMailto` / `unsubscribeHttp` URLs are returned only with `includeUnsubscribeLinks: true` (they can be very long).
 
 ## Development
 

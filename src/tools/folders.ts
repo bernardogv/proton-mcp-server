@@ -1,5 +1,47 @@
+import { z } from 'zod';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { ImapClientManager } from '../imap-client.js';
 import type { ToolResult } from '../utils/types.js';
+
+export function registerFolderTools(server: McpServer, imap: ImapClientManager): void {
+  server.registerTool('list_folders', {
+    title: 'List Folders',
+    description: 'List all folders and labels in the mailbox',
+    inputSchema: z.object({}),
+  }, async () => listFoldersHandler(imap));
+
+  server.registerTool('create_folder', {
+    title: 'Create Folder',
+    description: 'Create a new folder/label',
+    inputSchema: z.object({
+      name: z.string().describe('Folder name (use / for subfolders, e.g. "Projects/Work")'),
+    }),
+  }, async ({ name }) => createFolderHandler(imap, { name }));
+
+  server.registerTool('delete_folder', {
+    title: 'Delete Folder',
+    description: 'Delete a folder/label from the mailbox. Use dryRun: true to preview what would be deleted.',
+    inputSchema: z.object({
+      path: z.string().describe('Full path of the folder to delete (e.g. "Folders/OldFolder")'),
+      dryRun: z.boolean().default(false).describe('If true, returns folder stats without deleting. Use to preview before committing.'),
+    }),
+  }, async ({ path, dryRun }) => deleteFolderHandler(imap, { path, dryRun }));
+
+  server.registerTool('rename_folder', {
+    title: 'Rename Folder',
+    description: 'Rename or move a folder',
+    inputSchema: z.object({
+      oldPath: z.string().describe('Current full path of the folder'),
+      newPath: z.string().describe('New full path for the folder'),
+    }),
+  }, async ({ oldPath, newPath }) => renameFolderHandler(imap, { oldPath, newPath }));
+
+  server.registerTool('get_folder_stats', {
+    title: 'Folder Stats',
+    description: 'Get message counts (total and unread) for all folders. Quick inbox health dashboard.',
+    inputSchema: z.object({}),
+  }, async () => getFolderStatsHandler(imap));
+}
 
 export async function listFoldersHandler(imap: ImapClientManager): Promise<ToolResult> {
   const folders = await imap.listFolders();

@@ -3,19 +3,16 @@
   "version": "1.0.0",
   "type": "module",
   "main": "dist/index.js",
-  "directories": {
-    "doc": "docs"
-  },
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/index.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": ["mcp", "proton", "email", "imap", "proton-bridge"],
+  "author": "BernardoGV",
   "license": "MIT",
-  "description": "",
+  "description": "MCP server for Proton Mail via Proton Bridge (IMAP/SMTP)",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
     "dotenv": "^17.3.1",

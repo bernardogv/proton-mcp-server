@@ -10,6 +10,11 @@ const configSchema = z.object({
   PROTON_BRIDGE_PASSWORD: z.string().min(1, 'PROTON_BRIDGE_PASSWORD is required'),
 });
 
+/** True for hosts where it is safe to skip TLS cert verification (Proton Bridge's self-signed cert). */
+export function isLoopbackHost(host: string): boolean {
+  return host === 'localhost' || host === '::1' || /^127\.\d+\.\d+\.\d+$/.test(host);
+}
+
 export function loadConfig(): BridgeConfig {
   const parsed = configSchema.parse(process.env);
   return {

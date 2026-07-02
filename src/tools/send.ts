@@ -1,6 +1,56 @@
 import type { SmtpClient } from '../smtp-client.js';
 import type { ImapClientManager } from '../imap-client.js';
 import type { ToolResult } from '../utils/types.js';
+import { replySubject, forwardSubject, buildReplyRecipients } from '../utils/mail-helpers.js';
+import { z } from 'zod';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+
+export function registerSendTools(server: McpServer, imap: ImapClientManager, smtp: SmtpClient): void {
+  server.registerTool('send_email', {
+    title: 'Send Email',
+    description: 'Send a NEW standalone email. WARNING: Do NOT use this for replying to existing threads — use reply_message instead, which handles threading headers automatically. Use dryRun: true to preview before sending.',
+    inputSchema: z.object({
+      to: z.array(z.email()).min(1).describe('Recipient email addresses'),
+      cc: z.array(z.email()).optional().describe('CC recipients'),
+      bcc: z.array(z.email()).optional().describe('BCC recipients'),
+      subject: z.string().describe('Email subject'),
+      body: z.string().describe('Email body (text or HTML)'),
+      isHtml: z.boolean().default(false).describe('Whether body is HTML'),
+      inReplyTo: z.string().regex(/^<[^>]+>$/, 'Must be a valid Message-ID (e.g. <id@domain>)').optional().describe('Message-ID to reply to (for threading)'),
+      dryRun: z.boolean().default(false).describe('If true, returns a preview of the email without sending. Always preview before sending.'),
+      attachments: z.array(z.object({
+        filename: z.string().describe('Attachment filename'),
+        contentBase64: z.string().describe('Base64-encoded file content'),
+        mimeType: z.string().optional().describe('MIME type (defaults to application/octet-stream)'),
+      })).optional().describe('File attachments'),
+    }),
+  }, async (params) => sendEmailHandler(smtp, params));
+
+  server.registerTool('reply_message', {
+    title: 'Reply to Message',
+    description: 'Reply to an email with proper threading. Reads the original message, sets In-Reply-To and References headers, handles recipients (reply or reply-all), quotes the original body, and sends. Use this instead of send_email when replying to an existing email. Use dryRun: true to preview before sending.',
+    inputSchema: z.object({
+      folder: z.string().describe('Folder containing the message to reply to'),
+      uid: z.number().describe('UID of the message to reply to'),
+      body: z.string().describe('Reply body text'),
+      isHtml: z.boolean().default(false).describe('Whether body is HTML'),
+      replyAll: z.boolean().default(false).describe('If true, reply to all recipients (To + CC). If false, reply only to the sender.'),
+      dryRun: z.boolean().default(false).describe('If true, returns a preview of the reply without sending. Always preview before sending.'),
+    }),
+  }, async (params) => replyMessageHandler(imap, smtp, params));
+
+  server.registerTool('forward_message', {
+    title: 'Forward Message',
+    description: 'Forward an email to new recipients. Reads the original message, builds a forwarded email with quoted headers and original body, and includes any attachments.',
+    inputSchema: z.object({
+      folder: z.string().describe('Folder containing the message to forward'),
+      uid: z.number().describe('UID of the message to forward'),
+      to: z.array(z.email()).min(1).describe('Recipient email addresses'),
+      cc: z.array(z.email()).optional().describe('CC recipients'),
+      body: z.string().optional().describe('Optional note to prepend above the forwarded message'),
+    }),
+  }, async (params) => forwardMessageHandler(imap, smtp, params));
+}
 
 export async function sendEmailHandler(
   smtp: SmtpClient,
@@ -67,9 +117,7 @@ export async function replyMessageHandler(
   const original = await imap.readMessage(params.folder, params.uid);
 
   // 2. Build subject
-  const subject = original.subject.match(/^Re:/i)
-    ? original.subject
-    : `Re: ${original.subject}`;
+  const subject = replySubject(original.subject);
 
   // 3. Build threading headers
   const inReplyTo = original.messageId;
@@ -78,24 +126,9 @@ export async function replyMessageHandler(
     : original.messageId;
 
   // 4. Determine recipients
-  // Extract email addresses from "Name <email>" format
-  const extractEmail = (addr: string): string => {
-    const match = addr.match(/<([^>]+)>/);
-    return match ? match[1] : addr.trim();
-  };
-  const originalFrom = extractEmail(original.from);
-  const to = [originalFrom];
-  let cc: string[] | undefined;
-
-  if (params.replyAll) {
-    const selfAddress = smtp.getUsername().toLowerCase();
-    const allTo = original.to.map(extractEmail).filter(a => a.toLowerCase() !== selfAddress);
-    const allCc = original.cc.map(extractEmail).filter(a => a.toLowerCase() !== selfAddress && a.toLowerCase() !== originalFrom.toLowerCase());
-    const additionalRecipients = [...allTo, ...allCc].filter(a => a.toLowerCase() !== originalFrom.toLowerCase());
-    if (additionalRecipients.length > 0) {
-      cc = additionalRecipients;
-    }
-  }
+  const { to, cc } = buildReplyRecipients(
+    original.from, original.to, original.cc, smtp.getUsername(), params.replyAll || false,
+  );
 
   // 5. Build quoted body
   const originalDate = original.date ? new Date(original.date).toLocaleString() : '';
@@ -153,9 +186,7 @@ export async function forwardMessageHandler(
   const original = await imap.readMessage(params.folder, params.uid);
 
   // 2. Build forwarded subject
-  const forwardedSubject = original.subject.startsWith('Fwd:')
-    ? original.subject
-    : `Fwd: ${original.subject}`;
+  const forwardedSubject = forwardSubject(original.subject);
 
   // 3. Build forwarded body with original headers
   const quotedHeaders = [
@@ -168,22 +199,22 @@ export async function forwardMessageHandler(
     ``,
   ].join('\n');
 
-  const originalBody = original.textBody || original.htmlBody || '';
   const userNote = params.body ? `${params.body}\n\n` : '';
-  const forwardedBody = `${userNote}${quotedHeaders}\n${originalBody}`;
+  // HTML-only originals must be forwarded as HTML, not raw markup in a text body
+  const isHtml = !original.textBody && !!original.htmlBody;
+  const forwardedBody = isHtml
+    ? `${userNote}${quotedHeaders}\n`.replace(/\n/g, '<br>\n') + original.htmlBody
+    : `${userNote}${quotedHeaders}\n${original.textBody}`;
 
-  // 4. Fetch attachments if present
-  const attachments: Array<{ filename: string; contentBase64: string; mimeType?: string }> = [];
-  if (original.attachments && original.attachments.length > 0) {
-    for (const att of original.attachments) {
-      const fetched = await imap.getAttachment(params.folder, params.uid, att.partId);
-      attachments.push({
-        filename: fetched.filename,
-        contentBase64: fetched.content.toString('base64'),
-        mimeType: fetched.mimeType,
-      });
-    }
-  }
+  // 4. Fetch attachments if present (single fetch/parse for all of them)
+  const fetched = original.attachments.length > 0
+    ? await imap.getAttachments(params.folder, params.uid)
+    : [];
+  const attachments = fetched.map((att) => ({
+    filename: att.filename,
+    contentBase64: att.content.toString('base64'),
+    mimeType: att.mimeType,
+  }));
 
   // 5. Send via SMTP
   const result = await smtp.sendEmail({
@@ -191,7 +222,7 @@ export async function forwardMessageHandler(
     cc: params.cc,
     subject: forwardedSubject,
     body: forwardedBody,
-    isHtml: false,
+    isHtml,
     attachments: attachments.length > 0 ? attachments : undefined,
   });
 
